@@ -106,8 +106,12 @@ CLAUDE.md
 .playwright-mcp/
 
 # Local scratch/discovery work, not part of the pipeline or the report.
-/discover_concerns.py
-regulations/*/discovery/
+/discover_concerns.pyregulations/*/discovery/
 regulations/*/old_yaml/
 regulations/*/preview/
 regulations/*/old_data/
+
+# On-request appendix (appendix.py): its question file, cache, results, page and
+# CSVs are all local-only. They hold commenter text and the repo is public.
+regulations/*/appendix_*
+regulations/*/appendix.html
