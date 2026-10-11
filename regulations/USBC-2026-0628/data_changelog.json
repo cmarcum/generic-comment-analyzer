@@ -1,6 +1,10 @@
 {
-  "last_total": 35050,
+  "last_total": 35071,
   "entries": [
+    {
+      "date": "2026-10-11",
+      "note": "Updated to 35,071 comments (+21 new)."
+    },
     {
       "date": "2026-10-10",
       "note": "Updated to 35,050 comments (+1,721 new)."
@@ -75,8 +79,8 @@
     }
   ],
   "last_shares": {
-    "Support": 12.542,
-    "Oppose": 87.11,
+    "Support": 12.543,
+    "Oppose": 87.109,
     "none": 0.168,
     "other": 0.18
   }
