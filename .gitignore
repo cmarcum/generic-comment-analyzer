@@ -106,7 +106,8 @@ CLAUDE.md
 .playwright-mcp/
 
 # Local scratch/discovery work, not part of the pipeline or the report.
-/discover_concerns.pyregulations/*/discovery/
+/discover_concerns.py
+regulations/*/discovery/
 regulations/*/old_yaml/
 regulations/*/preview/
 regulations/*/old_data/
