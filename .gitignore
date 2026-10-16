@@ -115,3 +115,6 @@ regulations/*/old_data/
 # CSVs are all local-only. They hold commenter text and the repo is public.
 regulations/*/appendix_*
 regulations/*/appendix.html
+
+#stop tracking census rule for now
+regulations/USBC-2026-0628/
