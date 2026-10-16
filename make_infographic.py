@@ -41,6 +41,7 @@ import pandas as pd  # noqa: E402
 import yaml  # noqa: E402
 from matplotlib import font_manager  # noqa: E402
 from matplotlib.patches import Circle, Polygon, Rectangle, Wedge  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 from scipy.ndimage import binary_dilation  # noqa: E402
 
@@ -186,7 +187,7 @@ def date_range_label(df, field):
     return f"{lo:%b} {lo.day}, {lo.year} – {hi:%b} {hi.day}, {hi.year}"
 
 
-def timeline_counts(df, field):
+def timeline_counts(df, field, weekly=True):
     """Comments per day (weekly if the span is very long) by position, or None if the date field is unusable."""
     if field not in df:
         return None
@@ -195,7 +196,7 @@ def timeline_counts(df, field):
         return None
     t = pd.crosstab(d, df['_pos']).reindex(columns=['Oppose', 'Support', 'Unclear'], fill_value=0)
     t = t.reindex(pd.date_range(t.index.min(), t.index.max(), freq='D'), fill_value=0)
-    if len(t) > 62:
+    if weekly and len(t) > 62:
         t = t.resample('W').sum()
     return t
 
@@ -474,39 +475,99 @@ def draw_gauge(ax, frac, pal, color, n_seg=20):
     ax.add_patch(Circle((0, 0), 0.055, fc=pal['bg'], ec='none', zorder=8))
 
 
-def build(df, meta, cfg, pal, out_dir, args):
-    W, H = args.size
-    dpi = 144
-    fig = plt.figure(figsize=(W / dpi, H / dpi), dpi=dpi, facecolor=pal['bg'])
-    muted = mix(pal['ink'], pal['bg'], 0.38)
-    body_family = args.fonts['body'][0]
-    disp = args.fonts['display'][0]
-    plt.rcParams.update({'font.family': body_family, 'text.parse_math': False, 'svg.fonttype': 'path'})
-    T = lambda x, y, s, **k: fig.text(x, y, s, **{'color': pal['ink'], **k})
-    renderer = fig.canvas.get_renderer()
+class Canvas:
+    """One slide: figure, shared frame + header (title, rule ID, date range, optional logo and
+    website) and the text helpers both slides use."""
 
-    def fit(x, y, s, max_w, **k):
+    def __init__(self, df, meta, cfg, pal, args):
+        self.W, self.H = args.size
+        self.dpi = 144
+        self.pal, self.args = pal, args
+        self.fig = plt.figure(figsize=(self.W / self.dpi, self.H / self.dpi), dpi=self.dpi, facecolor=pal['bg'])
+        self.muted = mix(pal['ink'], pal['bg'], 0.38)
+        self.disp = args.fonts['display'][0]
+        plt.rcParams.update({'font.family': args.fonts['body'][0], 'text.parse_math': False,
+                             'svg.fonttype': 'path'})
+        self.renderer = self.fig.canvas.get_renderer()
+        self.rule_id = meta.get('docket_id') or args.rule_id
+        self.dates = date_range_label(df, args.date_field)
+        self.title = cfg.get('title', args.title)
+        self._chrome()
+
+    def T(self, x, y, s, **k):
+        return self.fig.text(x, y, s, **{'color': self.pal['ink'], **k})
+
+    def fit(self, x, y, s, max_w, **k):
         """Left-aligned text, ellipsised until it fits max_w (figure-width fraction)."""
-        t = T(x, y, s, ha='left', **k)
-        while len(s) > 4 and t.get_window_extent(renderer).width / (W) > max_w:
-            s = s[:-2].rstrip() + '…' if not s.endswith('…') else s[:-2].rstrip() + '…'
+        t = self.T(x, y, s, ha='left', **k)
+        while len(s) > 4 and t.get_window_extent(self.renderer).width / self.W > max_w:
+            s = s[:-2].rstrip() + '\u2026'
             t.set_text(s)
         return t
 
-    def wrap(s, fontsize, max_w):
+    def wrap(self, s, fontsize, max_w):
         """Greedy word-wrap to max_w (figure-width fraction). Never truncates."""
-        probe = fig.text(0, 0, '', fontsize=fontsize)
+        probe = self.fig.text(0, 0, '', fontsize=fontsize)
         lines, cur = [], ''
         for word in s.split():
             trial = f'{cur} {word}'.strip()
             probe.set_text(trial)
-            if cur and probe.get_window_extent(renderer).width / W > max_w:
+            if cur and probe.get_window_extent(self.renderer).width / self.W > max_w:
                 lines.append(cur)
                 cur = word
             else:
                 cur = trial
         probe.remove()
         return lines + ([cur] if cur else [])
+
+    def _x_extent(self, artist):
+        bb = artist.get_window_extent(self.renderer)
+        return bb.x0 / self.W, bb.x1 / self.W
+
+    def _chrome(self):
+        pal, args, fig = self.pal, self.args, self.fig
+        fig.add_artist(Rectangle((0.008, 0.014), 0.984, 0.972, transform=fig.transFigure, fill=False,
+                                 ec=pal['ink'], lw=2.4))
+        title = self.T(0.03, 0.925, self.title.upper(), fontsize=19, fontweight='bold', va='center', ha='left',
+                       family=self.disp)
+        docket = self.T(0.97, 0.925, f'{self.rule_id}   \u00b7   {self.dates}' if self.dates else self.rule_id,
+                        fontsize=15, ha='right', va='center', family=args.fonts['mono'][0], fontweight='bold')
+        fig.add_artist(Line2D([0.03, 0.97], [0.875, 0.875], transform=fig.transFigure, color=pal['ink'], lw=1.6))
+        if not (args.logo or args.website):
+            return
+        x = self._x_extent(title)[1] + 0.03          # logo + website sit just after the title
+        h = args.logo_height
+        if args.logo:
+            img = Image.open(args.logo).convert('RGBA')
+            w = h * self.H * img.width / img.height / self.W
+            px = (max(int(w * self.W * 2), 1), max(int(h * self.H * 2), 1))
+            ax = fig.add_axes([x, 0.925 - h / 2, w, h])
+            ax.imshow(img.resize(px, Image.LANCZOS), interpolation='none', aspect='auto')
+            ax.axis('off')
+            x += w + 0.012
+        if args.website:
+            site = self.T(x, 0.925, args.website, fontsize=13, fontweight='bold', va='center', ha='left',
+                          color=self.muted)
+            x = self._x_extent(site)[1]
+        if x > self._x_extent(docket)[0] - 0.015:
+            print('warning: logo/website run into the rule ID in the header; reduce --logo-height or '
+                  'shorten --website', file=sys.stderr)
+
+    def save(self, out_dir, name, formats):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        paths = []
+        for fmt in formats:
+            p = out_dir / f'{name}.{fmt}'
+            self.fig.savefig(p, dpi=self.dpi, facecolor=self.pal['bg'])
+            paths.append(p)
+        plt.close(self.fig)
+        return paths
+
+
+def build(df, meta, cfg, pal, out_dir, args):
+    cv = Canvas(df, meta, cfg, pal, args)
+    fig, W, H, dpi, T, fit, wrap = cv.fig, cv.W, cv.H, cv.dpi, cv.T, cv.fit, cv.wrap
+    renderer, muted, disp = cv.renderer, cv.muted, cv.disp
 
     total = len(df)
     n_op = int((df['_pos'] == 'Oppose').sum())
@@ -517,17 +578,7 @@ def build(df, meta, cfg, pal, out_dir, args):
         sys.exit(f"meter must be 'oppose' or 'support', got {meter!r}")
     n_meter = n_op if meter == 'oppose' else n_su
     frac = n_meter / total if total else 0
-    rule_id = meta.get('docket_id') or args.rule_id
-    dates = date_range_label(df, args.date_field)
-    title = cfg.get('title', args.title)
-
-    # frame + header
-    fig.add_artist(Rectangle((0.008, 0.014), 0.984, 0.972, transform=fig.transFigure, fill=False,
-                             ec=pal['ink'], lw=2.4))
-    T(0.03, 0.925, title.upper(), fontsize=19, fontweight='bold', va='center', ha='left', family=disp)
-    T(0.97, 0.925, f'{rule_id}   ·   {dates}' if dates else rule_id, fontsize=15, ha='right',
-      va='center', family=args.fonts['mono'][0], fontweight='bold', color=pal['ink'])
-    fig.add_artist(plt.Line2D([0.03, 0.97], [0.875, 0.875], transform=fig.transFigure, color=pal['ink'], lw=1.6))
+    rule_id, dates = cv.rule_id, cv.dates
 
     # ---- left: total + gauge
     T(0.03, 0.785, f'{total:,}', fontsize=62, fontweight='bold', va='center', ha='left', family=disp)
@@ -669,6 +720,218 @@ def build(df, meta, cfg, pal, out_dir, args):
     return written + [jp], data
 
 
+# --------------------------------- slide 2 ---------------------------------
+def parse_day(value, what):
+    try:
+        return pd.Timestamp(value).tz_localize(None).normalize()
+    except (ValueError, TypeError):
+        sys.exit(f'{what} must be a date like 2026-10-13, got {value!r}')
+
+
+def topic_names_per_row(df, prefix):
+    stances = [_as_list((a or {}).get('stances')) for a in df['analysis']]
+    any_prefixed = any(x.startswith(prefix) for row in stances for x in row)
+    rows = []
+    for row in stances:
+        names = set()
+        for x in row:
+            if x.startswith('Position:') or (any_prefixed and not x.startswith(prefix)):
+                continue
+            names.add(x[len(prefix):].strip() if x.startswith(prefix) else x.strip())
+        rows.append(names)
+    return rows
+
+
+def topic_matrices(df, prefix, k, basis):
+    """Top-k topics; share of each position's comments raising each topic; topic-pair overlap (Jaccard)."""
+    names = [t['name'] for t in topic_counts(df, prefix, k)]
+    sub = voices(df) if basis == 'voices' else df
+    rows = topic_names_per_row(sub, prefix)
+    B = np.array([[n in r for n in names] for r in rows], bool).reshape(len(rows), len(names))
+    pos = sub['_pos'].to_numpy()
+    heat = np.array([[B[pos == p, i].mean() if (pos == p).any() else 0.0 for p in ('Oppose', 'Support', 'Unclear')]
+                     for i in range(len(names))])
+    inter = B.T.astype(int) @ B.astype(int)
+    diag = np.diag(inter)
+    union = diag[:, None] + diag[None, :] - inter
+    jac = np.divide(inter, union, out=np.zeros(inter.shape, float), where=union > 0)
+    return names, heat, jac, int(len(sub))
+
+
+def style_axes(ax, pal, ylabel_at=None):
+    ax.patch.set_alpha(0)
+    for side in ('top', 'right', 'left'):
+        ax.spines[side].set_visible(False)
+    ax.spines['bottom'].set_color(pal['ink'])
+    ax.spines['bottom'].set_linewidth(1.6)
+    ax.tick_params(axis='y', length=0, labelsize=9, colors=pal['ink'], pad=3)
+    ax.tick_params(axis='x', length=4, width=1.2, labelsize=9, colors=pal['ink'], color=pal['ink'])
+    if ylabel_at is not None:
+        ax.set_yticks([ylabel_at])
+        ax.set_yticklabels([f'{int(ylabel_at):,}'])
+        ax.axhline(ylabel_at, color=pal['neutral'], lw=1, zorder=0)
+
+
+def day_ticks(ax, index, n=4):
+    """Label up to n evenly spaced dates; bars/areas are drawn at x = 0..len(index)-1."""
+    idx = sorted(set(np.linspace(0, len(index) - 1, min(len(index), n)).round().astype(int)))
+    ax.set_xticks(idx)
+    ax.set_xticklabels([f'{index[i]:%b} {index[i].day}' for i in idx])
+
+
+def build_detail(df, meta, cfg, pal, out_dir, args):
+    cv = Canvas(df, meta, cfg, pal, args)
+    fig, W, H, T = cv.fig, cv.W, cv.H, cv.T
+    muted, disp = cv.muted, cv.disp
+    prefix = cfg.get('topic_prefix', args.topic_prefix)
+    k = args.heatmap_topics
+    basis = args.basis or cfg.get('basis', 'comments')
+    names, heat, jac, n_basis = topic_matrices(df, prefix, k, basis)
+    k = len(names)
+    out = dict(basis=basis, comments_in_basis=n_basis, topics=names, share_by_position=heat.round(4).tolist(),
+               overlap=jac.round(4).tolist())
+    ink_ramp = lambda v: mix(pal['bg'], pal['ink'], 0.08 + 0.80 * float(v))
+    text_on = lambda fill: pal['ink'] if contrast(pal['ink'], fill) >= contrast(pal['bg'], fill) else pal['bg']
+    head = dict(fontsize=12, fontweight='bold', va='center', ha='left', color=muted, family=disp)
+    sub = dict(fontsize=9.5, va='center', ha='left', color=muted)
+    basis_note = 'each form-letter campaign counted once' if basis == 'voices' else 'all comments'
+
+    # ---- row 1 left: topics x position heatmap
+    if k:
+        T(0.03, 0.845, 'TOPICS × POSITION', **head)
+        T(0.03, 0.815, f'share of each side’s comments that raise the topic  ·  {basis_note}', **sub)
+        cell_w, label_w, x_cells = 0.115, 0.34, 0.37
+        top, bottom = 0.765, 0.445
+        row_h = (bottom - top) / k           # negative: rows run downward
+        for j, (label, col) in enumerate((('OPPOSE', pal['oppose']), ('SUPPORT', pal['support']),
+                                          ('NEITHER', pal['neutral']))):
+            cx = x_cells + cell_w * (j + 0.5)
+            fig.add_artist(Rectangle((cx - 0.05, 0.787), 0.009, 0.016, transform=fig.transFigure, fc=col, ec='none'))
+            T(cx - 0.036, 0.795, label, fontsize=10, fontweight='bold', va='center', ha='left', family=disp)
+        hax = fig.add_axes([x_cells, bottom, cell_w * 3, top - bottom])
+        hax.set_xlim(0, 3)
+        hax.set_ylim(k, 0)
+        hax.axis('off')
+        for i in range(k):
+            yc = top + row_h * (i + 0.5)
+            T(0.03, yc, str(i + 1), fontsize=11, fontweight='bold', va='center', ha='left', family=disp)
+            lines = cv.wrap(names[i], 9.5, label_w - 0.03)[:2]
+            T(0.048, yc, '\n'.join(lines), fontsize=9.5, va='center', ha='left', linespacing=1.1)
+            for j, col in enumerate((pal['oppose'], pal['support'], pal['neutral'])):
+                v = heat[i, j]
+                fill = mix(pal['bg'], col, 0.06 + 0.94 * v)
+                hax.add_patch(Rectangle((j, i), 1, 1, fc=fill, ec=pal['bg'], lw=2.5))
+                hax.text(j + 0.5, i + 0.5, f'{round(v * 100)}%', ha='center', va='center', fontsize=10.5,
+                         fontweight='bold', color=text_on(fill))
+
+    # ---- row 1 right: topic co-occurrence (lower triangle, diagonal carries the topic number)
+    if k >= 2:
+        T(0.745, 0.845, 'TOPIC OVERLAP', **head)
+        T(0.745, 0.815, 'comments sharing both topics, %', **sub)
+        h = 0.355
+        w = h * H / W
+        oax = fig.add_axes([0.97 - w, 0.445, w, h])
+        oax.set_xlim(0, k)
+        oax.set_ylim(k, 0)
+        oax.axis('off')
+        for i in range(k):
+            for j in range(i + 1):
+                if i == j:
+                    oax.add_patch(Rectangle((j, i), 1, 1, fc=pal['bg'], ec=pal['bg'], lw=2))
+                    oax.text(j + 0.5, i + 0.5, str(i + 1), ha='center', va='center', fontsize=11, fontweight='bold',
+                             color=pal['ink'], family=disp)
+                else:
+                    fill = ink_ramp(jac[i, j])
+                    oax.add_patch(Rectangle((j, i), 1, 1, fc=fill, ec=pal['bg'], lw=2))
+                    oax.text(j + 0.5, i + 0.5, f'{round(jac[i, j] * 100)}', ha='center', va='center', fontsize=9,
+                             fontweight='bold', color=text_on(fill))
+
+    # ---- row 2: dates
+    rec_field = args.received_field or cfg.get('received_field', 'received_date')
+    post_field = args.posted_field or cfg.get('posted_field', 'date')
+    rec = timeline_counts(df, rec_field, weekly=False)
+    post = timeline_counts(df, post_field, weekly=False)
+
+    mode = args.difference or cfg.get('difference', 'cumulative')
+    T(0.03, 0.40, 'RECEIVED − POSTED', **head)
+    if rec is not None and post is not None:
+        idx = pd.date_range(min(rec.index.min(), post.index.min()), max(rec.index.max(), post.index.max()), freq='D')
+        r = rec.sum(axis=1).reindex(idx, fill_value=0)
+        q = post.sum(axis=1).reindex(idx, fill_value=0)
+        daily = r - q
+        diff = daily.cumsum() if mode == 'cumulative' else daily
+        T(0.03, 0.372, 'received but not yet posted' if mode == 'cumulative' else 'received minus posted, per day',
+          **sub)
+        ax = fig.add_axes([0.07, 0.095, 0.40, 0.245])
+        ax.bar(np.arange(len(idx)), diff.values, color=mix(pal['bg'], pal['ink'], 0.55), width=0.8, linewidth=0)
+        ax.axhline(0, color=pal['ink'], lw=1.2, zorder=3)
+        hi, lo = int(diff.max()), int(diff.min())
+        style_axes(ax, pal)
+        ticks = sorted({hi} | ({lo} if lo < 0 else set()))
+        ax.set_yticks(ticks)
+        ax.set_yticklabels([f'{t:,}' for t in ticks])
+        for t in ticks:
+            ax.axhline(t, color=pal['neutral'], lw=1, zorder=0)
+        top = max(hi, 0) * 1.08
+        bottom = min(lo, 0) * 1.12
+        ax.set_ylim(bottom, top if top > bottom else 1)
+        ax.set_xlim(-0.8, len(idx) - 0.2)
+        day_ticks(ax, idx)
+        out['received_minus_posted'] = [dict(date=f'{d:%Y-%m-%d}', received=int(r[d]), posted=int(q[d]),
+                                             daily_difference=int(daily[d]), backlog=int(daily.cumsum()[d]))
+                                        for d in idx]
+        out['difference_mode'] = mode
+    else:
+        print('note: the received-vs-posted panel needs both date columns', file=sys.stderr)
+
+    # ---- cumulative curve against a stated deadline
+    deadline_raw = args.deadline or cfg.get('deadline')
+    deadline = parse_day(deadline_raw, '--deadline') if deadline_raw else None
+    T(0.53, 0.40, 'CUMULATIVE COMMENTS' + (' VS DEADLINE' if deadline is not None else ''), **head)
+    if deadline is None:
+        print('note: no --deadline given, so the cumulative curve is drawn without a deadline marker',
+              file=sys.stderr)
+    cum_df = timeline_counts(df, rec_field, weekly=False)
+    if cum_df is None:
+        cum_df = timeline_counts(df, post_field, weekly=False)
+    if cum_df is not None:
+        cum = cum_df.cumsum()
+        start, last = cum.index[0], cum.index[-1]
+        days = np.array([(d - start).days for d in cum.index])
+        end_day = max((deadline - start).days, days[-1]) if deadline is not None else days[-1]
+        ax = fig.add_axes([0.58, 0.095, 0.39, 0.255])
+        ax.stackplot(days, cum['Oppose'].values, cum['Support'].values, cum['Unclear'].values,
+                     colors=[pal['oppose'], pal['support'], pal['neutral']], linewidth=0)
+        total_now = int(cum.iloc[-1].sum())
+        style_axes(ax, pal, total_now)
+        ax.set_xlim(0, end_day + 0.4)
+        ax.set_ylim(0, total_now * 1.12)
+        span_idx = pd.date_range(start, start + pd.Timedelta(days=int(end_day)), freq='D')
+        day_ticks(ax, span_idx, n=5)
+        asof_raw = args.as_of or cfg.get('as_of')
+        asof = parse_day(asof_raw, '--as-of') if asof_raw else pd.Timestamp.today().normalize()
+        if deadline is not None:
+            dd = (deadline - start).days
+            ax.axvline(dd, color=pal['ink'], lw=2, ls=(0, (4, 3)), zorder=4)
+            ax.text(dd - 0.45, total_now * 1.09, f'{deadline:%b} {deadline.day}', ha='right', va='top', fontsize=10.5,
+                    fontweight='bold', color=pal['ink'])
+            left = (deadline - asof).days
+            if left > 0:
+                mid = (max(days[-1], (asof - start).days) + dd) / 2
+                ax.text(mid, total_now * 0.5, f'{left} day{"s" if left != 1 else ""} left', ha='center', va='center',
+                        fontsize=10.5, color=muted)
+            out['deadline'] = f'{deadline:%Y-%m-%d}'
+            out['days_left'] = int(left)
+        out['cumulative'] = [dict(date=f'{d:%Y-%m-%d}', oppose=int(r['Oppose']), support=int(r['Support']),
+                                  neither=int(r['Unclear'])) for d, r in cum.iterrows()]
+
+    paths = cv.save(out_dir, f'{args.name}_2', args.formats)
+    jp = out_dir / f'{args.name}_2.json'
+    jp.write_text(json.dumps(out, indent=2, default=str), encoding='utf-8')
+    return paths + [jp]
+
+
+
 # ----------------------------------- CLI -----------------------------------
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -688,6 +951,23 @@ def main(argv=None):
     ap.add_argument('--color', action='append', default=[], metavar='ROLE=#HEX', help=f'roles: {", ".join(ROLES)}')
     ap.add_argument('--meter', choices=['oppose', 'support'], default=None,
                     help='which share the gauge shows (default: oppose, or infographic.meter in the config)')
+    ap.add_argument('--slides', default=None,
+                    help="comma list of slides to build: 'summary' (default) and/or 'detail' (topics heatmap + "
+                         "overlap, received vs posted, cumulative vs deadline; written as <name>_2.png)")
+    ap.add_argument('--deadline', default=None, help='comment deadline for the detail slide, e.g. 2026-10-13. '
+                    'Never inferred; without it the cumulative curve has no deadline marker')
+    ap.add_argument('--as-of', default=None, help='date used for "days left" (default: today; pass it for a reproducible rebuild)')
+    ap.add_argument('--heatmap-topics', type=int, default=8, help='topics shown in the heatmap and overlap matrix')
+    ap.add_argument('--basis', choices=['comments', 'voices'], default=None,
+                    help="detail-slide topic stats: every comment (default) or each form-letter campaign counted once")
+    ap.add_argument('--difference', choices=['cumulative', 'daily'], default=None,
+                    help="detail slide: 'cumulative' = received but not yet posted as of each date (default); "
+                         "'daily' = received minus posted on each date")
+    ap.add_argument('--received-field', default=None, help='detail slide: when submitted (default: received_date)')
+    ap.add_argument('--posted-field', default=None, help='detail slide: when posted (default: date)')
+    ap.add_argument('--logo', default=None, help='PNG/JPG shown in the header after the title (SVG not supported)')
+    ap.add_argument('--website', default=None, help='text shown in the header next to the logo, e.g. handsoffourcens.us')
+    ap.add_argument('--logo-height', type=float, default=0.06, help='logo height as a fraction of slide height')
     ap.add_argument('--panel', choices=['timeline', 'entities'], default=None,
                     help='bottom-right panel: comments over time (default) or the entity-type summary')
     ap.add_argument('--timeline-date-field', default=None,
@@ -750,6 +1030,19 @@ def main(argv=None):
                       display=resolve_font(font_spec('display_font', body_spec), 'display'),
                       cloud=resolve_font(font_spec('cloud_font', body_spec), 'cloud'),
                       mono=resolve_font(font_spec('mono_font', 'DejaVu Sans Mono'), 'mono'))
+    logo = args.logo or cfg.get('logo')
+    if logo:
+        logo_path = reg / logo if (reg / str(logo)).is_file() else Path(logo)
+        if not logo_path.is_file():
+            sys.exit(f'logo file not found: {logo}')
+        if logo_path.suffix.lower() == '.svg':
+            sys.exit('SVG logos are not supported; export a PNG (transparent background works)')
+        args.logo = str(logo_path)
+    args.website = args.website or cfg.get('website')
+    slides = args.slides or cfg.get('slides', 'summary')
+    slides = [x.strip() for x in (slides.split(',') if isinstance(slides, str) else slides) if x.strip()]
+    if not slides or set(slides) - {'summary', 'detail'}:
+        sys.exit("--slides takes 'summary', 'detail' or 'summary,detail'")
     warns = check_palette(pal)
     for w in warns:
         print(f'palette warning: {w}', file=sys.stderr)
@@ -761,7 +1054,11 @@ def main(argv=None):
         sys.exit(f'Parquet not found: {parquet}  (pass --parquet, or run `python sync_state.py pull` first)')
     df = load_comments(parquet)
     out_dir = Path(args.out_dir) if args.out_dir else reg
-    files, data = build(df, meta, cfg, pal, out_dir, args)
+    files, data = [], None
+    if 'summary' in slides:
+        files, data = build(df, meta, cfg, pal, out_dir, args)
+    if 'detail' in slides:
+        files += build_detail(df, meta, cfg, pal, out_dir, args)
     for f in files:
         print(f)
     return data
