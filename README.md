@@ -86,6 +86,119 @@ python generate_report.py --parquet regulations/<slug>/sample_10.parquet --outpu
 The report is a large single-file HTML (~120 MB at ~47k comments), so deploy it locally or to a static
 host like Netlify rather than GitHub Pages.
 
+## Infographic slides
+
+`make_infographic.py` turns a finished analysis into a one-slide (16:9) summary that you can post or drop
+into a deck. It reads the same `full_run.parquet` the report uses, so it works for any regulation with no
+code changes. The default slide has the comment total, the share opposed (or supporting) as a dial, two word
+clouds (oppose and support), the top topics, and comments per day. The rule ID and the comment date range
+are in the header.
+
+```bash
+python make_infographic.py --regulation <slug>
+```
+
+This reads `regulations/<slug>/full_run.parquet` and writes `infographic.png` and `infographic.json` (the
+numbers behind the slide) next to it. Use `--parquet` and `--out-dir` to read or write elsewhere; both
+accept a plain or `.gz` parquet. The rule ID and title come from `regulation_metadata.json`.
+
+### Choosing what goes on the slide
+
+The count and dial sit at the left. To their right is a 2 x 2 grid of quadrants:
+
+```
+        middle      right
+top      tl          tr
+bottom   bl          br
+```
+
+Any figure can go in any quadrant:
+
+| Figure | Shows |
+|---|---|
+| `cloud_oppose`, `cloud_support` | One word cloud per side. Words are the ones that set that side apart from the other. |
+| `cloud_both` | One cloud for both sides, coloured by side. Each side keeps its own word order and the two get the same size at each rank, so neither owns all the large words. |
+| `topics` | Top concerns, each bar split oppose / support. |
+| `timeline` | Comments per day (per week on long dockets), stacked by position. |
+| `entities` | Who is commenting, by entity type. |
+| `state_map` | Tile map of comments by state: an oppose cell and a support cell per state, each shaded against its own highest state. Counts print when they fit. Needs the pipeline's `state_identified` field. |
+| `backlog` | Comments received but not yet posted, over time. |
+| `cumulative` | Cumulative comments, with a marker for the deadline and days left. |
+| `none` | Leave the quadrant empty. |
+
+```bash
+# the default
+--layout tl=cloud_oppose,bl=cloud_support,tr=topics,br=timeline
+
+# one combined cloud; the freed quadrant gets the state map
+--clouds combined
+
+# pick any figures, in any quadrants (naming only some is fine)
+--layout tl=cloud_both,bl=state_map,tr=topics,br=cumulative --deadline 2027-01-15
+
+# 'top' / 'bottom' merge a row's two quadrants into one wide slot
+--layout top=state_map,bl=cloud_both,br=timeline
+```
+
+A figure can appear only once. Naming a wide slot and one of its quadrants together is rejected with a clear
+message. `--meter support` makes the dial show the support share instead of oppose.
+
+### Look and feel
+
+- **Colours:** five roles (`bg`, `ink`, `oppose`, `support`, `neutral`). Pick a built-in `--palette`
+  (`okabe-ito` is the default, plus `plum-gold`, `dark`, `mono`) and override any role with
+  `--color oppose=#RRGGBB`. The script warns when a pair would be hard to tell apart under common forms of colour
+  blindness or has low contrast; `--strict` turns the warnings into errors.
+- **Fonts:** `--font` for body text, `--display-font` for the large labels, `--cloud-font`, `--mono-font` for
+  the header. Each takes an installed font name or a path to a `.ttf`/`.otf` file. A missing font is an error
+  rather than a silent substitute.
+- **Header:** `--title`, `--logo` (PNG or JPG) and `--website`.
+- **Word clouds:** `--words`, `--contrast` (higher favours words distinctive to one side), `--stopwords`
+  (comma-separated), and `--stopwords-file` (plain text, one or more words per line, `#` for comments). A trailing
+  `*` is a prefix match: `oppos*` drops oppose, opposed, opposition. Words like these are already built in, so a
+  docket's own noise words belong in its stop-word file. Form-letter text is stripped before counting, and each
+  campaign counts once, so a template copied thousands of times does not fill the cloud.
+- **Size and formats:** `--size 1920x1080`, `--formats png,svg,pdf`.
+
+### A second slide
+
+`--slides summary,detail` also writes `<name>_2.png`: topics by position as a heatmap, how often topics
+co-occur, the posting backlog, and cumulative comments against a deadline. The deadline is never inferred.
+Pass `--deadline YYYY-MM-DD`, and `--as-of` to fix the date used for "days left".
+
+### Using it on a regulation with different labels
+
+The script reads the pipeline's stance tags by substring. If a regulation words them differently, tell it
+which tags mean oppose or support, and which prefix marks topics:
+
+```bash
+python make_infographic.py --regulation <slug>     --oppose-tag "Stance: Against" --support-tag "Stance: For" --topic-prefix "Topic:"
+```
+
+### Keeping the choices in the regulation's config
+
+Every option above can live in an `infographic:` block of `analyzer_config.yaml`; command-line flags override
+it. Config values for files (logo, stop-word file, fonts) are relative to the regulation folder.
+
+```yaml
+infographic:
+  palette: okabe-ito
+  colors: {oppose: "#cf5d00", support: "#2072b1"}
+  clouds: combined
+  extra_figure: state_map
+  layout: {br: timeline}
+  meter: oppose
+  deadline: "2027-01-15"
+  website: example.org
+  logo: logo.png
+  stopwords_file: stopwords.txt
+  oppose_tags: ["Stance: Against"]
+  support_tags: ["Stance: For"]
+```
+
+Outputs hold real counts, so keep them out of version control (`regulations/<slug>/` is already ignored).
+`python make_infographic.py --help` lists every option.
+
 ## Campaign similarity (optional LSA refinements)
 
 Campaigns are found with **MinHash** on word 5-grams: fast, deterministic, and precise about
