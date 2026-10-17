@@ -1,10 +1,11 @@
 """Latent-semantic (TF-IDF + truncated SVD) text similarity.
 
-An ALTERNATIVE to the 5-gram MinHash similarity in campaign_similarity.py, not a
-replacement: nothing in pipeline.py imports this. MinHash answers "is this the
-same form letter, word for word"; this answers "do these two texts say similar
-things in similar words", which survives personalisation, reordering and
-paraphrase that dilute a 5-gram Jaccard score. It is what campaign_map.py draws.
+A SUPPLEMENT to the 5-gram MinHash similarity in campaign_similarity.py, not a
+replacement. MinHash answers "is this the same form letter, word for word"; this
+answers "do these two texts say similar things in similar words", which survives
+the personalisation, reordering and paraphrase that dilute a 5-gram Jaccard
+score. pipeline.py imports it only when the opt-in campaigns.resolve_overlaps /
+campaigns.letters options are set; campaign_map.py draws it.
 
 The pieces, all pure functions over numpy / scipy (no I/O, no plotting):
 
@@ -13,15 +14,19 @@ The pieces, all pure functions over numpy / scipy (no I/O, no plotting):
     Z = project(X, sub)                         comment scores in the subspace
     q = retained_norm(Z)                        how much of each text the subspace kept
 
+    U, q = embed_texts(texts, k)                all of the above for a list of texts
+    resolve_overlaps(U, q, clusters)            nearest-centre owner of multi-cluster items
+    group_by_similarity(centres, threshold)     average-linkage groups of unit centres
+
 Two things matter more than they look:
 
   * `retained_norm`. X's rows have unit length, so ||Z_i|| is the share of text i
     the k-dimensional subspace retained. A short or idiosyncratic comment can
-    keep very little (< 0.1), and its direction is then mostly noise: re-
-    normalising it to unit length manufactures a confident-looking cosine: with
-    too small a k, campaigns that share no 5-gram at all (even ones on opposite
-    sides of the rule) can come out near cosine 1. Gate on `retained_norm`, and
-    raise k until such pairs disappear, before trusting a cosine.
+    keep very little (< 0.1), and its direction is then mostly noise: scaling it
+    back to unit length manufactures a confident-looking cosine. With too small
+    a k, campaigns that share no 5-gram at all (even ones on opposite sides of
+    the rule) can come out near cosine 1. Gate on `retained_norm`, and raise k
+    until such pairs disappear, before trusting a cosine.
 
   * Fit on DISTINCT texts, weighted by sqrt(copies) (see fit_subspace), so that
     one huge campaign neither owns every axis nor vanishes from the subspace.
@@ -164,3 +169,104 @@ def top_terms(sub: Subspace, vocab: Sequence[str], direction: np.ndarray, n: int
     i.e. the largest entries of its back-projection into term space."""
     weights = sub.components.T @ direction
     return [vocab[i] for i in np.argsort(-weights)[:n] if weights[i] > 0]
+
+
+# ---------------------------------------------------------------------------
+# Building blocks for the pipeline's opt-in campaign refinements (pure; the
+# comment-dict plumbing lives in pipeline.py).
+# ---------------------------------------------------------------------------
+def embed_texts(texts: Sequence[str], k: int = 200, min_df: int = 2, max_df_frac: float = 1.0,
+                seed: int = 0):
+    """Unit-length LSA vector and retained norm for every text, in input order.
+
+    Identical wordings are collapsed before fitting and the subspace is weighted
+    by sqrt(copies), so a huge campaign neither owns every axis nor vanishes from
+    it. `max_df_frac` defaults to 1.0 (keep every term): a dominant campaign's own
+    template words appear in most texts and are exactly what identifies it.
+
+    Returns (U, q): U is (n, k') with all-zero rows for texts that kept no terms,
+    q is (n,) retained norms. Raises ValueError when the texts are too few or too
+    uniform to fit a subspace (callers decide whether that is fatal).
+    """
+    norm = [normalize_text(t) for t in texts]
+    uniq, inverse, counts = np.unique(np.array(norm, dtype=object), return_inverse=True, return_counts=True)
+    inverse = np.asarray(inverse).ravel()
+    tfidf = build_tfidf([str(u) for u in uniq], min_df=min_df, max_df_frac=max_df_frac)
+    sub = fit_subspace(tfidf.matrix, k=k, weights=np.sqrt(counts), seed=seed)
+    Z = project(tfidf.matrix, sub)
+    return unit_rows(Z)[inverse], retained_norm(Z)[inverse]
+
+
+def resolve_overlaps(U: np.ndarray, quality: np.ndarray, clusters: Sequence[Sequence[int]],
+                     min_retained: float = 0.15, tie: float = 1e-9,
+                     candidates: Optional[Dict[int, Sequence[int]]] = None) -> Dict[int, int]:
+    """Decide which cluster an item that sits in SEVERAL clusters belongs to.
+
+    `clusters` holds item indices into U (unit rows). Each cluster's centre is the
+    quality-weighted mean direction of its UNAMBIGUOUS members (items in exactly
+    one cluster), or of all its members if it has none. An ambiguous item goes to
+    the cluster whose centre it is closest to (cosine).
+
+    `candidates`, if given, narrows the job: only the items it lists are decided,
+    each choosing only among the listed cluster indices. The pipeline uses this to
+    let word-for-word similarity decide first and call on LSA only for near-ties.
+
+    Returns {item: cluster index} only for items this actually decides. An item is
+    left out - so the caller's existing rule still applies - when it retained less
+    than `min_retained` of its text (its direction is mostly noise) or when its
+    two best clusters tie within `tie`.
+
+    Why LSA alone is not trusted to decide: measured against the word-for-word
+    measure that defines a campaign, a nearest-centre pick was about as likely to
+    land on a clearly WORSE-matching cluster as a better one.
+    """
+    seen = collections.Counter(i for c in clusters for i in c)
+    ambiguous = {i for i, n in seen.items() if n > 1}       # centres are built without ALL of these
+    targets = ambiguous if candidates is None else ambiguous & set(candidates)
+    if not targets:
+        return {}
+    centres = []
+    for c in clusters:
+        solo = [i for i in c if i not in ambiguous] or list(c)
+        w = quality[solo]
+        m = (U[solo] * w[:, None]).sum(axis=0) if w.sum() > 0 else U[solo].sum(axis=0)
+        norm = np.linalg.norm(m)
+        centres.append(m / norm if norm > 0 else m)
+    owners_of = collections.defaultdict(list)
+    for ci, c in enumerate(clusters):
+        for i in c:
+            if i in targets and (candidates is None or ci in candidates[i]):
+                owners_of[i].append(ci)
+    decided = {}
+    for i, cands in owners_of.items():
+        if quality[i] < min_retained:
+            continue
+        sims = np.array([float(U[i] @ centres[ci]) for ci in cands])
+        order = np.argsort(-sims)
+        if len(cands) > 1 and sims[order[0]] - sims[order[1]] <= tie:
+            continue
+        decided[i] = cands[int(order[0])]
+    return decided
+
+
+def group_by_similarity(centres: np.ndarray, threshold: float) -> np.ndarray:
+    """Group unit-length centres by average-linkage on cosine distance, cut where
+    the mean cosine between groups falls below `threshold`. Average (not single)
+    linkage, so a chain A~B~C does not pull an unrelated A and C together.
+
+    Returns integer labels 0..g-1, numbered by first appearance so the result is
+    deterministic.
+    """
+    n = len(centres)
+    if n == 0:
+        return np.zeros(0, dtype=int)
+    if n == 1:
+        return np.zeros(1, dtype=int)
+    from scipy.cluster.hierarchy import fcluster, linkage
+    from scipy.spatial.distance import squareform
+    dist = np.clip(1.0 - centres @ centres.T, 0.0, None)
+    np.fill_diagonal(dist, 0.0)
+    raw = fcluster(linkage(squareform((dist + dist.T) / 2, checks=False), 'average'),
+                   t=1.0 - threshold, criterion='distance')
+    relabel = {}
+    return np.array([relabel.setdefault(r, len(relabel)) for r in raw], dtype=int)

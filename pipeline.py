@@ -922,12 +922,96 @@ def _campaign_label_text(comment: Dict[str, Any]) -> str:
     return body or att
 
 
-def detect_campaigns(comments: List[Dict[str, Any]], threshold: float = 0.45, min_campaign_size: int = 5, min_chars: int = 100) -> List[Dict[str, Any]]:
+def _resolve_cluster_overlaps(comments: List[Dict[str, Any]], clusters: List[List[int]],
+                              minhashes: Dict[int, Any], lsa_k: int = 200,
+                              jaccard_tie: float = 0.05) -> Dict[int, int]:
+    """Opt-in helper for detect_campaigns(): {comment index -> index into `clusters`}
+    for every comment the raw MinHash clustering put in several clusters.
+
+    The word-for-word measure that defines a campaign decides first: a comment goes
+    to the cluster whose canonical text it matches best by 5-gram Jaccard. Only
+    when two or more clusters are within `jaccard_tie` of the best is latent-
+    semantic similarity (lsa_similarity.py) asked to break the tie, by closeness to
+    each cluster's centre; if that cannot decide either (comment too poorly
+    represented, exact tie, or too little text to fit a subspace) the last tied
+    cluster wins, which is the default rule restricted to the genuine candidates.
+
+    LSA is deliberately not the first judge: measured against the Jaccard it was
+    about as likely to pick a clearly worse-matching cluster as a better one.
+    """
+    from collections import Counter, defaultdict
+    if not clusters:
+        return {}
+    clusters_of = defaultdict(list)
+    for ci, c in enumerate(clusters):
+        for i in c:
+            clusters_of[i].append(ci)
+    ambiguous = [i for i, cs in clusters_of.items() if len(cs) > 1]
+    if not ambiguous:
+        return {}
+
+    from campaign_similarity import make_campaign_minhash
+    canon_mh = []
+    for c in clusters:
+        # Same canonical rule as detect_campaigns, but over members in index order so a
+        # tie between equally common texts always resolves the same way (cluster order
+        # out of the LSH query is not stable between runs).
+        counts = Counter(_campaign_label_text(comments[i]) for i in sorted(c))
+        canon_mh.append(make_campaign_minhash(counts.most_common(1)[0][0]) if counts else None)
+
+    owner: Dict[int, int] = {}
+    near: Dict[int, List[int]] = {}
+    for i in ambiguous:
+        jac = {ci: (minhashes[i].jaccard(canon_mh[ci]) if canon_mh[ci] is not None else 0.0)
+               for ci in clusters_of[i]}
+        best = max(jac.values())
+        tied = [ci for ci in clusters_of[i] if jac[ci] >= best - jaccard_tie]
+        if len(tied) == 1:
+            owner[i] = tied[0]
+        else:
+            near[i] = tied
+    by_jaccard, n_ties = len(owner), len(near)
+
+    by_lsa = 0
+    if near:
+        decided = {}
+        try:
+            import lsa_similarity as lsa
+            members = sorted({i for c in clusters for i in c})
+            row = {i: r for r, i in enumerate(members)}
+            U, q = lsa.embed_texts([comments[i].get('text', '') or '' for i in members], k=lsa_k)
+            picked = lsa.resolve_overlaps(U, q, [[row[i] for i in c] for c in clusters],
+                                          candidates={row[i]: cs for i, cs in near.items()})
+            decided = {members[r]: ci for r, ci in picked.items()}
+        except ValueError as e:
+            logger.warning(f"LSA tie-break skipped (could not fit a latent-semantic subspace: {e}); "
+                           f"near-ties keep the last-cluster-wins rule")
+        by_lsa = len(decided)
+        for i, cs in near.items():
+            owner[i] = decided.get(i, max(cs))
+    logger.info(f"Overlap resolution: {len(ambiguous)} multi-cluster comment(s): {by_jaccard} decided by word-for-word "
+                f"similarity, {n_ties} near-ties ({by_lsa} broken by LSA, {n_ties - by_lsa} left to last-cluster-wins)")
+    return owner
+
+
+def detect_campaigns(comments: List[Dict[str, Any]], threshold: float = 0.45, min_campaign_size: int = 5, min_chars: int = 100,
+                     resolve_overlaps: bool = False, lsa_k: int = 200) -> List[Dict[str, Any]]:
     """Detect form letter campaigns using MinHash LSH on 5-gram Jaccard similarity.
 
     Assigns campaign_id and campaign_size to each comment. Comments not in any
     campaign get campaign_id=None. `min_chars` is the minimum normalized-text
     length for a comment to be eligible for a campaign (config: campaigns.min_chars).
+
+    By default a comment that falls in more than one raw cluster is given to
+    whichever cluster is processed last (the smaller one, since clusters are sorted
+    by size), and every member's `campaign_size` is the raw cluster's length, which
+    counts members that ended up elsewhere. `resolve_overlaps` (config:
+    campaigns.resolve_overlaps, default off) instead gives such a comment to the
+    cluster whose canonical text it matches best word-for-word, uses latent-semantic
+    similarity (lsa_similarity.py, `lsa_k` dimensions) only to break near-ties, and
+    sets `campaign_size` to the number of comments the campaign really ends up
+    with. campaign_id is unchanged either way: it is still derived from the
+    cluster's canonical text. See _resolve_cluster_overlaps().
     """
     from datasketch import MinHash, MinHashLSH
 
@@ -986,10 +1070,15 @@ def detect_campaigns(comments: List[Dict[str, Any]], threshold: float = 0.45, mi
     campaigns.sort(key=len, reverse=True)
     logger.info(f"Found {len(campaigns)} campaigns with {min_campaign_size}+ members")
 
+    # Opt-in: comment index -> index (in `campaigns`) of the cluster it should
+    # belong to, for comments the raw clustering put in more than one. Empty by
+    # default, which leaves every line below behaving exactly as it always has.
+    overlap_owner = _resolve_cluster_overlaps(comments, campaigns, minhashes, lsa_k) if resolve_overlaps else {}
+
     # Build lookup: comment index -> campaign info
     idx_to_campaign = {}
     seen_ids = {}
-    for cluster in campaigns:
+    for ci, cluster in enumerate(campaigns):
         # Label the campaign by the most common substantive member text — the
         # attachment when the body is just a "see attached" stub (see
         # _campaign_label_text), so it isn't shown as "See attached file(s)".
@@ -1021,11 +1110,25 @@ def detect_campaigns(comments: List[Dict[str, Any]], threshold: float = 0.45, mi
         seen_ids[campaign_id] = canonical_text
 
         for idx in cluster:
+            if overlap_owner.get(idx, ci) != ci:
+                continue   # resolved to a different cluster (opt-in only)
             idx_to_campaign[idx] = {
                 'campaign_id': campaign_id,
                 'campaign_size': len(cluster),
                 'campaign_canonical': canonical_text,
             }
+
+    if resolve_overlaps:
+        # len(cluster) counts members that ended up in another cluster, so the
+        # raw figure overstates a campaign; store what it actually holds.
+        final_sizes = collections.Counter(info['campaign_id'] for info in idx_to_campaign.values())
+        for info in idx_to_campaign.values():
+            info['campaign_size'] = final_sizes[info['campaign_id']]
+        small = sum(1 for n in final_sizes.values() if n < min_campaign_size)
+        logger.info(f"Overlap resolution: {len(overlap_owner)} multi-cluster comment(s) placed by LSA similarity; "
+                    f"{len(final_sizes)} campaigns remain")
+        if small:
+            logger.warning(f"{small} campaign(s) now hold fewer than {min_campaign_size} comments after overlap resolution")
 
     # Apply to comments
     total_in_campaigns = 0
@@ -1334,6 +1437,71 @@ def cluster_families(comments: List[Dict[str, Any]], threshold: float = 0.3) -> 
             c['family_id'] = None
             c['family_label'] = None
 
+    return comments
+
+
+def cluster_letters(comments: List[Dict[str, Any]], threshold: float = 0.9, lsa_k: int = 200) -> List[Dict[str, Any]]:
+    """Opt-in (config: campaigns.letters): group campaigns that are really the same
+    letter, by latent-semantic similarity, and tag every member with `letter_id` and
+    `letter_label` (None for comments outside a campaign).
+
+    MinHash splits one letter into several campaigns whenever its variants differ
+    enough word-for-word (a different opening, a personalised paragraph), which can
+    leave many campaigns that are near-twins of a bigger one. This measures each
+    campaign's centre in a TF-IDF + SVD subspace (lsa_similarity.py,
+    quality-weighted so poorly-represented comments count for less) and merges
+    centres whose cosine is at least `threshold` by AVERAGE linkage, so a chain
+    A~B~C cannot pull an unrelated A and C together the way cluster_families()'s
+    union-find does.
+
+    It only reads campaign_id / campaign_canonical and adds two fields: it never
+    changes campaign or family membership. letter_id is the campaign_id of the
+    letter's largest campaign (ties: the smaller id), like family_id.
+    """
+    from collections import Counter
+    import numpy as np
+
+    for c in comments:
+        c['letter_id'] = None
+        c['letter_label'] = None
+    members = [i for i, c in enumerate(comments) if c.get('campaign_id') is not None]
+    if not members:
+        return comments
+
+    import lsa_similarity as lsa
+    try:
+        U, q = lsa.embed_texts([comments[i].get('text', '') or '' for i in members], k=lsa_k)
+    except ValueError as e:
+        logger.warning(f"Letter grouping skipped (could not fit a latent-semantic subspace: {e})")
+        return comments
+
+    cids = np.array([comments[i]['campaign_id'] for i in members], dtype=object)
+    centres = lsa.group_centroids(U, cids, weights=q)
+    order = list(centres)
+    labels = lsa.group_by_similarity(np.stack([centres[c] for c in order]), threshold)
+    group_of = dict(zip(order, labels.tolist()))
+
+    size = Counter(cids.tolist())
+    rep = {}
+    for cid in order:
+        g = group_of[cid]
+        if g not in rep or (size[cid], -cid) > (size[rep[g]], -rep[g]):
+            rep[g] = cid
+    canonical = {}
+    for i in members:
+        canonical.setdefault(comments[i]['campaign_id'], comments[i].get('campaign_canonical') or '')
+    letter_label = {}
+    for g, cid in rep.items():
+        words = lsa.normalize_text(canonical.get(cid, '')).split()
+        letter_label[g] = ' '.join(words[:8]) if words else f'campaign-{cid}'
+
+    for i in members:
+        g = group_of[comments[i]['campaign_id']]
+        comments[i]['letter_id'] = rep[g]
+        comments[i]['letter_label'] = letter_label[g]
+
+    logger.info(f"Grouped {len(order)} campaigns into {len(rep)} distinct letters "
+                f"(centre cosine >= {threshold}, k={lsa_k})")
     return comments
 
 
@@ -1771,7 +1939,9 @@ def main():
         logger.info("=== STEP 6: Campaign Detection ===")
         campaign_cfg = (load_yaml_config() or {}).get('campaigns') or {}
         analyzed_comments = detect_campaigns(
-            analyzed_comments, min_chars=campaign_cfg.get('min_chars', 100))
+            analyzed_comments, min_chars=campaign_cfg.get('min_chars', 100),
+            resolve_overlaps=campaign_cfg.get('resolve_overlaps', False),
+            lsa_k=campaign_cfg.get('lsa_k', 200))
 
         # Step 6a: Sweep personalized comments the primary pass missed into a
         # campaign it already found (config: campaigns.sweep_orphans, default on).
@@ -1784,6 +1954,13 @@ def main():
 
         # Step 6b: Cluster campaigns into letter families
         analyzed_comments = cluster_families(analyzed_comments)
+
+        # Step 6c (opt-in, config: campaigns.letters): merge campaigns that are
+        # the same letter by latent-semantic similarity. Adds letter_id/letter_label.
+        if campaign_cfg.get('letters', False):
+            analyzed_comments = cluster_letters(
+                analyzed_comments, threshold=campaign_cfg.get('letters_threshold', 0.9),
+                lsa_k=campaign_cfg.get('lsa_k', 200))
 
         # Step 7: Save final results
         logger.info("=== STEP 7: Saving Final Results ===")
