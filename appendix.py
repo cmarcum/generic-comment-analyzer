@@ -123,11 +123,9 @@ SCOPES = ('collapsed', 'rows')
 CHUNK_POLICIES = ('auto', 'matching', 'all')
 SALVAGE_KEYS = ('tags', 'flags', 'entity_types', 'hints')
 
-# Two-letter abbreviation -> full name, for the state_map question. The 50 states + DC match the
-# VALID_STATES set pipeline.py already checks `state_identified` against. The four territories are
-# included so they always appear on the map (per request) even though `state_identified` will never
-# actually hold one of their codes -- pipeline.py's validator clears anything outside VALID_STATES,
-# so these four are guaranteed to show zero comments unless that validator is ever widened.
+# Two-letter abbreviation -> full name, for the state_map question. Matches the VALID_STATES set that
+# pipeline.py checks `state_identified` against: the 50 states, DC and the four territories. A territory
+# shows zero comments unless a commenter's text actually places them there.
 US_STATE_NAMES = {
     'AL': 'Alabama', 'AK': 'Alaska', 'AZ': 'Arizona', 'AR': 'Arkansas', 'CA': 'California',
     'CO': 'Colorado', 'CT': 'Connecticut', 'DE': 'Delaware', 'FL': 'Florida', 'GA': 'Georgia',

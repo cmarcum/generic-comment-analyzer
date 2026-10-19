@@ -505,8 +505,9 @@ def validate_analysis(analysis: dict, comment_text: str, submitter: str = '', or
         analysis['political_affiliation'] = ''
         analysis['political_affiliation_quote'] = ''
 
-    # Validate state is a real US state/DC abbreviation
-    VALID_STATES = {'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'}
+    # Validate state is a real US state, DC or territory abbreviation
+    VALID_STATES = {'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC',
+                    'PR','GU','VI','AS'}  # territories: residents are commenters too
     state = analysis.get('state_identified', '')
     if state and state not in VALID_STATES:
         logger.warning(f"Invalid state '{state}', clearing")

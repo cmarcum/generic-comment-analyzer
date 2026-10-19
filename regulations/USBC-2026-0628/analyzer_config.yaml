@@ -206,8 +206,9 @@ additional_fields:
     an exact substring from anywhere in the text including submitter name or organization. Leave
     empty if no identifying information.
   state: >
-    If the submitter's US state can be identified from any clue in the text (city/state, government
-    or institution location, etc.), provide the two-letter abbreviation (e.g. CA, TX). Also extract
+    If the submitter's US state or territory can be identified from any clue in the text (city/state,
+    government or institution location, etc.), provide the two-letter abbreviation (e.g. CA, TX; for a
+    territory PR, GU, VI or AS). Also extract
     a verbatim quote justifying this. Leave both empty if no state can be determined.
   political_affiliation: >
     ONLY if the submitter explicitly self-identifies their political party (e.g. "as a Republican",
@@ -313,9 +314,13 @@ fields:
     type: text
     label: "State"
     prompt: >
-      If the submitter's US state can be identified from any clue in the text (city/state,
-      government or institution location, etc.), provide the two-letter abbreviation (e.g. CA, TX).
-      Leave empty if no state can be determined.
+      If the submitter's US state or territory can be identified from any clue in the text (city/state,
+      government or institution location, a ZIP code, etc.), provide the two-letter abbreviation (e.g. CA, TX).
+      Use PR for Puerto Rico, GU for Guam, VI for the U.S. Virgin Islands and AS for American Samoa. Someone
+      who lives or works there (an address, a local university or employer) is from there; a comment that
+      merely mentions a territory is not. Use only the commenter's own location. The address of the agency or
+      official the comment is addressed to (for example the Department of Commerce or the Census Bureau at the top
+      of a letter) is the recipient's, never the commenter's. Leave empty if no state can be determined.
     show: []
 
   - name: state_quote
