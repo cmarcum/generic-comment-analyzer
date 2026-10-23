@@ -166,6 +166,23 @@ message. `--meter support` makes the dial show the support share instead of oppo
 co-occur, the posting backlog, and cumulative comments against a deadline. The deadline is never inferred.
 Pass `--deadline YYYY-MM-DD`, and `--as-of` to fix the date used for "days left".
 
+### A slide of one figure
+
+Any figure can be a slide of its own, in the same frame and header as the others. Name it in `--slides`; it is
+written as `<name>_<figure>.png`, with a `.json` of the numbers behind it.
+
+```bash
+python make_infographic.py --regulation <slug> --slides state_map
+python make_infographic.py --regulation <slug> --slides summary,topics,cumulative --deadline 2027-01-15
+```
+
+The figures are the ones in the table above, plus three that exist only as slides: `meter` (the count and dial),
+`heatmap` and `overlap` (the two topic figures from the second slide). `summary` and `detail` are the two slides
+already described, so they mix freely with figure names. On its own, a figure gets the whole area under the
+header, so its text and chart are drawn larger, a word cloud holds more words, and the state map prints both counts
+in each tile and carries its own oppose / support key (in a layout, the word cloud carries that). Colours, fonts,
+logo, stop words and the other options apply as usual.
+
 ### Using it on a regulation with different labels
 
 The script reads the pipeline's stance tags by substring. If a regulation words them differently, tell it

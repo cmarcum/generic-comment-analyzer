@@ -24,6 +24,11 @@ What goes on the slide. Right of the count and meter are four quadrants (tl tr /
                                      the freed quadrant gets --extra-figure (default state_map)
     --layout top=state_map,bl=cloud_both,br=timeline      'top' / 'bottom' merge a row's two quadrants
 Figures: cloud_oppose cloud_support cloud_both topics timeline entities state_map backlog cumulative none.
+Any figure can also be a slide of its own, in the same frame and header (written as <name>_<figure>.png):
+    --slides state_map                  one figure
+    --slides summary,state_map,topics   the usual slide plus two single-figure slides
+Figures for single-figure slides: meter cloud_oppose cloud_support cloud_both topics timeline entities state_map
+backlog cumulative heatmap overlap.
 The state map is the appendix's tile map (oppose and support per state, shaded within each position) and fits one
 quadrant: tiles are side by side when there is room and stacked when not (--map-tile, --map-counts). The same choices
 can live in the docket's infographic: block (clouds, extra_figure, layout, map_counts, map_tile).
@@ -674,8 +679,8 @@ def slot_geometry(slot):
     return {**s, **ROWS_GEOM[s['row']]}
 
 
-def _head(ctx):
-    return dict(fontsize=12, fontweight='bold', va='center', ha='left', color=ctx.cv.muted, family=ctx.cv.disp)
+def _head(ctx, hs=1.0):
+    return dict(fontsize=12 * hs, fontweight='bold', va='center', ha='left', color=ctx.cv.muted, family=ctx.cv.disp)
 
 
 # ---- word clouds
@@ -697,33 +702,35 @@ def _cloud_weights(ctx, grp, n_words):
     return ctx.cache[key]
 
 
-def _draw_cloud(ctx, x, y, w, h, weights, color, colors=None):
+def _draw_cloud(ctx, x, y, w, h, weights, color, colors=None, scale=1.0):
     cv, args = ctx.cv, ctx.args
     W, H = cv.W, cv.H
     ss = 2
     pw, ph = int(w * W) * ss, int(h * H) * ss
-    img = render_cloud(weights, pw, ph, color, args.fonts['cloud'][1], min_px=int(14 * ss * W / 1920 * 1.6),
-                       max_px=int(64 * ss * W / 1920 * 1.6), seed=args.seed, colors=colors)
+    img = render_cloud(weights, pw, ph, color, args.fonts['cloud'][1], min_px=int(14 * ss * W / 1920 * 1.6 * scale),
+                       max_px=int(64 * ss * W / 1920 * 1.6 * scale), seed=args.seed, colors=colors,
+                       margin=max(4, round(4 * scale)))
     ax = cv.fig.add_axes([x, y, w, h])
     img = img.resize((pw // ss, ph // ss), Image.LANCZOS)  # constant RGB, so no halo
     ax.imshow(img, interpolation='none', aspect='auto')
     ax.axis('off')
 
 
-def _chip(ctx, x, rect_y, text_y, col, label):
+def _chip(ctx, x, rect_y, text_y, col, label, hs=1.0):
     cv = ctx.cv
-    cv.fig.add_artist(Rectangle((x, rect_y), 0.014, 0.024, transform=cv.fig.transFigure, fc=col, ec='none'))
-    return cv.T(x + 0.022, text_y, label, fontsize=12, fontweight='bold', va='center', ha='left', family=cv.disp)
+    cv.fig.add_artist(Rectangle((x, rect_y), 0.014 * hs, 0.024 * hs, transform=cv.fig.transFigure, fc=col, ec='none'))
+    return cv.T(x + 0.022 * hs, text_y, label, fontsize=12 * hs, fontweight='bold', va='center', ha='left', family=cv.disp)
 
 
 def panel_cloud(ctx, slot, grp):
     x, w = slot['x'], slot['w']
     y, h = slot['cloud']
     col = ctx.pal[grp.lower()]
-    wts = _cloud_weights(ctx, grp, ctx.args.words)
+    sc, hs = slot.get('scale', 1.0), slot.get('hscale', 1.0)
+    wts = _cloud_weights(ctx, grp, round(ctx.args.words * slot.get('words_x', 1)))
     ctx.data.setdefault('cloud_words', {})[grp] = list(wts)
-    _draw_cloud(ctx, x, y, w, h, wts, col)
-    _chip(ctx, x, y + h + 0.012, y + h + 0.024, col, grp.upper())
+    _draw_cloud(ctx, x, y, w, h, wts, col, scale=sc)
+    _chip(ctx, x, y + h + 0.012, y + h + 0.024, col, grp.upper(), hs)
     return f'cloud_{grp.lower()}'
 
 
@@ -735,7 +742,8 @@ def panel_cloud_both(ctx, slot):
     pal, args = ctx.pal, ctx.args
     x, w = slot['x'], slot['w']
     y, h = slot['cloud']
-    n_each = max(8, round(args.words * args.combined_share))
+    sc, hs = slot.get('scale', 1.0), slot.get('hscale', 1.0)
+    n_each = max(8, round(args.words * args.combined_share * slot.get('words_x', 1)))
     sides = {}
     for grp in ('Oppose', 'Support'):
         wts = _cloud_weights(ctx, grp, n_each)
@@ -758,10 +766,10 @@ def panel_cloud_both(ctx, slot):
     for word, wt, g in sorted(ranked, key=lambda t: -t[1]):
         if wt > merged.get(word, 0):
             merged[word], colors[word] = wt, pal[g.lower()]
-    _draw_cloud(ctx, x, y, w, h, merged, pal['oppose'], colors=colors)
-    first = _chip(ctx, x, y + h + 0.012, y + h + 0.024, pal['oppose'], 'OPPOSE')
-    x2 = ctx.cv._x_extent(first)[1] + 0.025
-    _chip(ctx, x2, y + h + 0.012, y + h + 0.024, pal['support'], 'SUPPORT')
+    _draw_cloud(ctx, x, y, w, h, merged, pal['oppose'], colors=colors, scale=sc)
+    first = _chip(ctx, x, y + h + 0.012, y + h + 0.024, pal['oppose'], 'OPPOSE', hs)
+    x2 = ctx.cv._x_extent(first)[1] + 0.025 * hs
+    _chip(ctx, x2, y + h + 0.012, y + h + 0.024, pal['support'], 'SUPPORT', hs)
     return 'cloud_both'
 
 
@@ -770,23 +778,24 @@ def panel_topics(ctx, slot):
     cv, pal, df, args = ctx.cv, ctx.pal, ctx.df, ctx.args
     T, wrap = cv.T, cv.wrap
     rx, rw = slot['x'], slot['w']
-    T(rx, slot['head_y'], 'TOPICS', **_head(ctx))
+    sc, hs = slot.get('scale', 1.0), slot.get('hscale', 1.0)
+    T(rx, slot['head_y'], 'TOPICS', **_head(ctx, hs))
     topics = topic_counts(df, ctx.cfg.get('topic_prefix', args.topic_prefix), args.topics)
     ctx.data['topics'] = topics
     tmax = max((t['n'] for t in topics), default=1)
-    bh, gap = 0.017, 0.012
+    bh, gap = 0.017 * sc, 0.012 * sc
     shown = list(topics)
-    fs = 10.5
+    fs = 10.5 * sc
 
     def measure(font_size):
         wr = [wrap(t['name'], font_size, rw) for t in shown]
-        return wr, sum(0.0185 + (len(w_) - 1) * 0.0205 + 0.006 + bh + gap for w_ in wr)
+        return wr, sum((0.0185 + (len(w_) - 1) * 0.0205) * sc + 0.006 * sc + bh + gap for w_ in wr)
 
     while True:  # shrink the label font a little if wrapping would crowd the quadrant
         wrapped, need = measure(fs)
-        if need <= slot['budget'] or fs <= 8.5:
+        if need <= slot['budget'] or fs <= 8.5 * sc:
             break
-        fs -= 0.5
+        fs -= 0.5 * sc
     while need > slot['budget'] and len(shown) > 3:  # still too tall at the smallest font: show fewer topics
         shown = shown[:-1]
         wrapped, need = measure(fs)
@@ -794,8 +803,8 @@ def panel_topics(ctx, slot):
     for t, lines in zip(shown, wrapped):
         label_h = (0.0185 + (len(lines) - 1) * 0.0205) * fs / 10.5
         T(rx, cursor, chr(10).join(lines), fontsize=fs, va='top', ha='left', linespacing=1.15)
-        bar_y = cursor - label_h - 0.006 - bh
-        T(rx + rw, bar_y + bh / 2, pct_str(t['n'], ctx.total), fontsize=10.5, fontweight='bold', va='center', ha='right')
+        bar_y = cursor - label_h - 0.006 * sc - bh
+        T(rx + rw, bar_y + bh / 2, pct_str(t['n'], ctx.total), fontsize=10.5 * sc, fontweight='bold', va='center', ha='right')
         x0 = rx
         for key, col in (('oppose', pal['oppose']), ('support', pal['support']), ('other', pal['neutral'])):
             wseg = rw * 0.85 * t[key] / tmax
@@ -816,9 +825,11 @@ def panel_timeline(ctx, slot):
         return panel_entities(ctx, slot)
     ctx.data['timeline'] = [dict(date=f'{i:%Y-%m-%d}', **{k.lower(): int(r[k]) for k in tl.columns})
                             for i, r in tl.iterrows()]
+    sc, hs = slot.get('scale', 1.0), slot.get('hscale', 1.0)
     per = 'WEEK' if (len(tl) > 1 and (tl.index[1] - tl.index[0]).days == 7) else 'DAY'
-    cv.T(rx, slot['head_y'], f'COMMENTS PER {per}', **_head(ctx))
-    ax = cv.fig.add_axes([rx + 0.03, slot['ax_y'], rw - 0.03, 0.255])
+    cv.T(rx, slot['head_y'], f'COMMENTS PER {per}', **_head(ctx, hs))
+    lm = 0.03 if sc == 1 else 0.045                 # room for the y label
+    ax = cv.fig.add_axes([rx + lm, slot['ax_y'], rw - lm, slot.get('chart_h', 0.255)])
     ax.patch.set_alpha(0)
     xs = np.arange(len(tl))
     bottom = np.zeros(len(tl))
@@ -835,11 +846,11 @@ def panel_timeline(ctx, slot):
     ax.spines['bottom'].set_linewidth(1.6)
     ax.set_yticks([peak])
     ax.set_yticklabels([f'{peak:,}'])
-    idx = sorted(set(np.linspace(0, len(tl) - 1, min(len(tl), 4)).round().astype(int)))
+    idx = sorted(set(np.linspace(0, len(tl) - 1, min(len(tl), 4 if sc == 1 else 8)).round().astype(int)))
     ax.set_xticks(idx)
     ax.set_xticklabels([f'{tl.index[i]:%b} {tl.index[i].day}' for i in idx])
-    ax.tick_params(axis='y', length=0, labelsize=9, colors=pal['ink'], pad=3)
-    ax.tick_params(axis='x', length=4, width=1.2, labelsize=9, colors=pal['ink'], color=pal['ink'])
+    ax.tick_params(axis='y', length=0, labelsize=9 * sc, colors=pal['ink'], pad=3)
+    ax.tick_params(axis='x', length=4, width=1.2, labelsize=9 * sc, colors=pal['ink'], color=pal['ink'])
     return 'timeline'
 
 
@@ -847,23 +858,24 @@ def panel_entities(ctx, slot):
     cv, pal, args, cfg = ctx.cv, ctx.pal, ctx.args, ctx.cfg
     T, fit = cv.T, cv.fit
     rx, rw, hy = slot['x'], slot['w'], slot['head_y']
+    sc, hs = slot.get('scale', 1.0), slot.get('hscale', 1.0)
     ent = entity_summary(ctx.df, args.entities)
-    T(rx, hy, 'WHO IS COMMENTING', **_head(ctx))
-    big = T(rx, hy - 0.075, pct_str(ent['primary_n'], ent['total']).replace('<', '').replace('>', ''),
-            fontsize=40, fontweight='bold', va='center', ha='left', family=cv.disp)
+    T(rx, hy, 'WHO IS COMMENTING', **_head(ctx, hs))
+    big = T(rx, hy - 0.075 * sc, pct_str(ent['primary_n'], ent['total']).replace('<', '').replace('>', ''),
+            fontsize=40 * sc, fontweight='bold', va='center', ha='left', family=cv.disp)
     label_x = rx + big.get_window_extent(cv.renderer).width / cv.W + 0.014  # follows the number's real width
-    T(label_x, hy - 0.075, shorten(cfg.get('entity_primary_label', ent['primary']), 26), fontsize=13,
+    T(label_x, hy - 0.075 * sc, shorten(cfg.get('entity_primary_label', ent['primary']), 26), fontsize=13 * sc,
       va='center', ha='left', color=cv.muted)
-    y0 = hy - 0.155
+    y0 = hy - 0.155 * sc
     rows = list(ent['shown']) + ([(f"+{ent['other_types']} more types", ent['other_n'])] if ent['other_n'] else [])
     rmax = max((n for _, n in rows), default=1)
-    step = min(0.05, 0.19 / max(len(rows), 1))
+    step = min(0.05 * sc, 0.19 * sc / max(len(rows), 1))
     for i, (name, n) in enumerate(rows):
         y = y0 - i * step
-        cv.fig.add_artist(Rectangle((rx, y - 0.016), rw * 0.62 * n / rmax + 0.002, 0.032, transform=cv.fig.transFigure,
+        cv.fig.add_artist(Rectangle((rx, y - 0.016 * sc), rw * 0.62 * n / rmax + 0.002, 0.032 * sc, transform=cv.fig.transFigure,
                                     fc=pal['neutral'], ec='none'))
-        fit(rx + 0.004, y, name, rw - 0.05, fontsize=9.5, va='center')
-        T(rx + rw, y, f'{n:,}', fontsize=10, fontweight='bold', va='center', ha='right')
+        fit(rx + 0.004, y, name, rw - 0.05, fontsize=9.5 * sc, va='center')
+        T(rx + rw, y, f'{n:,}', fontsize=10 * sc, fontweight='bold', va='center', ha='right')
     return 'entities'
 
 
@@ -908,11 +920,12 @@ def panel_state_map(ctx, slot):
     W, H = cv.W, cv.H
     x, w, hy = slot['x'], slot['w'], slot['head_y']
     wide = bool(slot.get('wide'))
-    cv.T(x, hy, 'COMMENTS BY STATE', **_head(ctx))
+    sc, hs = slot.get('scale', 1.0), slot.get('hscale', 1.0)
+    cv.T(x, hy, 'COMMENTS BY STATE', **_head(ctx, hs))
     per = state_counts(ctx.df)
     with_state = sum(sum(c.values()) for c in per.values())
     if not with_state:
-        cv.T(x, hy - 0.04, 'no state information in this data', fontsize=10, va='center', ha='left', color=cv.muted)
+        cv.T(x, hy - 0.04, 'no state information in this data', fontsize=10 * hs, va='center', ha='left', color=cv.muted)
         return 'state_map'
     op = {s_: c['Oppose'] for s_, c in per.items()}
     su = {s_: c['Support'] for s_, c in per.items()}
@@ -927,10 +940,10 @@ def panel_state_map(ctx, slot):
             return light
         return mix(light, color, 0.15 + 0.85 * math.sqrt(n / n_max))
 
-    cv.T(x, hy - 0.028, f'{with_state:,} of {ctx.total:,} comments name a state', fontsize=9.5, va='center',
+    cv.T(x, hy - 0.028 * hs, f'{with_state:,} of {ctx.total:,} comments name a state', fontsize=9.5 * hs, va='center',
          ha='left', color=cv.muted)
     cells, n_rows, n_cols = _map_cells()
-    top = hy - 0.052
+    top = hy - 0.052 * hs
     avail_w, avail_h = w * W, (top - slot.get('map_bottom', slot['chart_bottom'])) * H   # stay clear of the chips below
     tw, th = avail_w / n_cols, avail_h / n_rows
     tw = min(tw, 1.6 * th)             # don't let tiles stretch into slabs
@@ -950,7 +963,8 @@ def panel_state_map(ctx, slot):
     cell_w, cell_h = (tile_w / 2, body_h) if style == 'split' else (tile_w, body_h / 2)
     mode = args.map_counts or cfg.get('map_counts', 'auto')
     show_counts = (cell_h >= 12 and cell_w >= 18) if mode == 'auto' else mode == 'on'
-    abbr_pt = max(6.0, min(9.0, head_h * 0.42))
+    abbr_pt = max(6.0, min(9.0 * sc, head_h * 0.42))
+    longest = max((len(_abbr_count(n)) for n in list(op.values()) + list(su.values())), default=1)
     for abbr, (r, c) in cells.items():
         x0, y0 = (c - 1) * tw + gap / 2, (r - 1) * th + gap / 2
         clip = FancyBboxPatch((x0, y0), tile_w, tile_h, boxstyle=f'round,pad=0,rounding_size={min(tile_w, tile_h) * 0.12}',
@@ -969,7 +983,7 @@ def panel_state_map(ctx, slot):
             block(x0, y0 + head_h, tile_w, body_h, empty_fill)
             if show_counts:
                 ax.text(x0 + tile_w / 2, y0 + head_h + body_h / 2, '—', ha='center', va='center',
-                        fontsize=7, color=cv.muted)
+                        fontsize=7 * sc, color=cv.muted)
             continue
         for k, (n, n_max, col) in enumerate(((op[abbr], max_op, pal['oppose']), (su[abbr], max_su, pal['support']))):
             fill = shade(col, n, n_max)
@@ -978,12 +992,19 @@ def panel_state_map(ctx, slot):
             block(cx, cy, cell_w, cell_h, fill)
             if show_counts:
                 label = _abbr_count(n)
-                pt = max(5.0, min(9.5, cell_h * 0.33, cell_w * 0.9 / (0.62 * len(label)) / 2))
+                pt = max(5.0, min(9.5 * sc, cell_h * 0.33, cell_w * (0.9 if sc <= 1 else 0.84) / (0.62 * (len(label) if sc <= 1 else longest)) / 2))
                 ax.text(cx + cell_w / 2, cy + cell_h / 2, label, ha='center', va='center', fontsize=pt,
                         fontweight='bold', color=text_on(fill))
 
-    # No oppose/support key: the colours are the ones in the word cloud. Just say what the shading means.
-    if not wide:
+    # In a layout the colours are the ones in the word cloud, so no key; just say what the shading means.
+    # On a slide of its own there is no cloud to carry the key, so draw one.
+    if slot.get('solo'):
+        xk = x + w - 0.215
+        _chip(ctx, xk, hy - 0.012 * hs, hy, pal['oppose'], 'OPPOSE', hs)
+        _chip(ctx, xk + 0.108, hy - 0.012 * hs, hy, pal['support'], 'SUPPORT', hs)
+        cv.T(x + w, hy - 0.028 * hs, 'darker = more, within each side', fontsize=9.5 * hs, va='center', ha='right',
+             color=cv.muted)
+    elif not wide:
         ax.text(0.2 * tw, 4.6 * th, 'darker = more', ha='left', va='center', fontsize=7.5, color=cv.muted)
     ctx.data['states'] = sorted(
         [dict(state=s_, oppose=int(per[s_]['Oppose']), support=int(per[s_]['Support']),
@@ -995,16 +1016,20 @@ def panel_state_map(ctx, slot):
 # ---- page-2 charts, usable in any quadrant
 def panel_backlog(ctx, slot):
     x, w = slot['x'], slot['w']
-    draw_backlog(ctx.cv, ctx.df, ctx.args, ctx.cfg, ctx.pal, (x, slot['head_y']), slot['head_y'] - 0.028,
-                 [x + 0.04, slot['ax_y'], w - 0.04, 0.245], ctx.data)
+    sc, hs = slot.get('scale', 1.0), slot.get('hscale', 1.0)
+    lm = 0.04 if sc == 1 else 0.055
+    draw_backlog(ctx.cv, ctx.df, ctx.args, ctx.cfg, ctx.pal, (x, slot['head_y']), slot['head_y'] - 0.028 * hs,
+                 [x + lm, slot['ax_y'], w - lm, slot.get('chart_h', 0.245)], ctx.data, sc=sc, hs=hs)
     return 'backlog'
 
 
 def panel_cumulative(ctx, slot):
     x, w = slot['x'], slot['w']
+    sc, hs = slot.get('scale', 1.0), slot.get('hscale', 1.0)
+    lm = 0.045 if sc == 1 else 0.06
     draw_cumulative(ctx.cv, ctx.df, ctx.args, ctx.cfg, ctx.pal, (x, slot['head_y']),
-                    [x + 0.045, slot['ax_y'], w - 0.045, 0.255], ctx.data, head_max_w=w, label_pad_px=10,
-                    days_left_right=True)
+                    [x + lm, slot['ax_y'], w - lm, slot.get('chart_h', 0.255)], ctx.data, head_max_w=w, label_pad_px=10,
+                    days_left_right=True, sc=sc, hs=hs)
     return 'cumulative'
 
 
@@ -1073,6 +1098,22 @@ def resolve_layout(args, cfg):
     return layout
 
 
+def draw_meter(cv, pal, total, n_op, n_su, n_un, meter, dx=0.0):
+    """The comment count and the oppose / support dial. `dx` shifts the block sideways (0 = its place on the slide)."""
+    fig, T, muted, disp = cv.fig, cv.T, cv.muted, cv.disp
+    n_meter = n_op if meter == 'oppose' else n_su
+    frac = n_meter / total if total else 0
+    T(0.03 + dx, 0.785, f'{total:,}', fontsize=62, fontweight='bold', va='center', ha='left', family=disp)
+    T(0.033 + dx, 0.685, 'comments', fontsize=19, va='center', ha='left', color=muted)
+    gax = fig.add_axes([0.03 + dx, 0.235, 0.31, 0.40])
+    draw_gauge(gax, frac, pal, pal[meter])
+    T(0.185 + dx, 0.185, pct_str(n_meter, total).replace('<', '').replace('>', ''), fontsize=54, fontweight='bold',
+      color=pal[meter], ha='center', va='center', family=disp)
+    T(0.185 + dx, 0.105, meter.upper(), fontsize=20, fontweight='bold', ha='center', va='center', family=disp)
+    T(0.185 + dx, 0.055, f'{n_op:,} oppose  \u00b7  {n_su:,} support  \u00b7  {n_un:,} neither', fontsize=10.5,
+      ha='center', va='center', color=muted)
+
+
 def build(df, meta, cfg, pal, out_dir, args):
     cv = Canvas(df, meta, cfg, pal, args)
     fig, W, H, dpi, T = cv.fig, cv.W, cv.H, cv.dpi, cv.T
@@ -1085,20 +1126,9 @@ def build(df, meta, cfg, pal, out_dir, args):
     meter = args.meter or cfg.get('meter', 'oppose')
     if meter not in ('oppose', 'support'):
         sys.exit(f"meter must be 'oppose' or 'support', got {meter!r}")
-    n_meter = n_op if meter == 'oppose' else n_su
-    frac = n_meter / total if total else 0
     rule_id, dates = cv.rule_id, cv.dates
 
-    # ---- left: total + gauge
-    T(0.03, 0.785, f'{total:,}', fontsize=62, fontweight='bold', va='center', ha='left', family=disp)
-    T(0.033, 0.685, 'comments', fontsize=19, va='center', ha='left', color=muted)
-    gax = fig.add_axes([0.03, 0.235, 0.31, 0.40])
-    draw_gauge(gax, frac, pal, pal[meter])
-    T(0.185, 0.185, pct_str(n_meter, total).replace('<', '').replace('>', ''), fontsize=54, fontweight='bold',
-      color=pal[meter], ha='center', va='center', family=disp)
-    T(0.185, 0.105, meter.upper(), fontsize=20, fontweight='bold', ha='center', va='center', family=disp)
-    T(0.185, 0.055, f'{n_op:,} oppose  ·  {n_su:,} support  ·  {n_un:,} neither', fontsize=10.5,
-      ha='center', va='center', color=muted)
+    draw_meter(cv, pal, total, n_op, n_su, n_un, meter)
 
     # ---- the four quadrants
     v = voices(df)
@@ -1167,14 +1197,14 @@ def topic_matrices(df, prefix, k, basis):
     return names, heat, jac, int(len(sub))
 
 
-def style_axes(ax, pal, ylabel_at=None):
+def style_axes(ax, pal, ylabel_at=None, size=9):
     ax.patch.set_alpha(0)
     for side in ('top', 'right', 'left'):
         ax.spines[side].set_visible(False)
     ax.spines['bottom'].set_color(pal['ink'])
     ax.spines['bottom'].set_linewidth(1.6)
-    ax.tick_params(axis='y', length=0, labelsize=9, colors=pal['ink'], pad=3)
-    ax.tick_params(axis='x', length=4, width=1.2, labelsize=9, colors=pal['ink'], color=pal['ink'])
+    ax.tick_params(axis='y', length=0, labelsize=size, colors=pal['ink'], pad=3)
+    ax.tick_params(axis='x', length=4, width=1.2, labelsize=size, colors=pal['ink'], color=pal['ink'])
     if ylabel_at is not None:
         ax.set_yticks([ylabel_at])
         ax.set_yticklabels([f'{int(ylabel_at):,}'])
@@ -1188,11 +1218,11 @@ def day_ticks(ax, index, n=4):
     ax.set_xticklabels([f'{index[i]:%b} {index[i].day}' for i in idx])
 
 
-def draw_backlog(cv, df, args, cfg, pal, head_xy, sub_y, rect, out):
+def draw_backlog(cv, df, args, cfg, pal, head_xy, sub_y, rect, out, sc=1.0, hs=1.0):
     """Received minus posted over time. Used by page 2 and by any slide-1 quadrant."""
     fig, T, muted, disp = cv.fig, cv.T, cv.muted, cv.disp
-    head = dict(fontsize=12, fontweight='bold', va='center', ha='left', color=muted, family=disp)
-    sub = dict(fontsize=9.5, va='center', ha='left', color=muted)
+    head = dict(fontsize=12 * hs, fontweight='bold', va='center', ha='left', color=muted, family=disp)
+    sub = dict(fontsize=9.5 * hs, va='center', ha='left', color=muted)
     rec_field = args.received_field or cfg.get('received_field', 'received_date')
     post_field = args.posted_field or cfg.get('posted_field', 'date')
     rec = timeline_counts(df, rec_field, weekly=False)
@@ -1212,7 +1242,7 @@ def draw_backlog(cv, df, args, cfg, pal, head_xy, sub_y, rect, out):
         ax.bar(np.arange(len(idx)), diff.values, color=mix(pal['bg'], pal['ink'], 0.55), width=0.8, linewidth=0)
         ax.axhline(0, color=pal['ink'], lw=1.2, zorder=3)
         hi, lo = int(diff.max()), int(diff.min())
-        style_axes(ax, pal)
+        style_axes(ax, pal, size=9 * sc)
         ticks = sorted({hi} | ({lo} if lo < 0 else set()))
         ax.set_yticks(ticks)
         ax.set_yticklabels([f'{t:,}' for t in ticks])
@@ -1222,7 +1252,7 @@ def draw_backlog(cv, df, args, cfg, pal, head_xy, sub_y, rect, out):
         bottom = min(lo, 0) * 1.12
         ax.set_ylim(bottom, top if top > bottom else 1)
         ax.set_xlim(-0.8, len(idx) - 0.2)
-        day_ticks(ax, idx)
+        day_ticks(ax, idx, n=4 if sc == 1 else 8)
         out['received_minus_posted'] = [dict(date=f'{d:%Y-%m-%d}', received=int(r[d]), posted=int(q[d]),
                                              daily_difference=int(daily[d]), backlog=int(daily.cumsum()[d]))
                                         for d in idx]
@@ -1233,10 +1263,10 @@ def draw_backlog(cv, df, args, cfg, pal, head_xy, sub_y, rect, out):
 
 
 def draw_cumulative(cv, df, args, cfg, pal, head_xy, rect, out, head_max_w=None, label_pad_px=None,
-                    days_left_right=False):
+                    days_left_right=False, sc=1.0, hs=1.0):
     """Cumulative comments against a stated deadline. Used by page 2 and by any slide-1 quadrant."""
     fig, T, muted, disp = cv.fig, cv.T, cv.muted, cv.disp
-    head = dict(fontsize=12, fontweight='bold', va='center', ha='left', color=muted, family=disp)
+    head = dict(fontsize=12 * hs, fontweight='bold', va='center', ha='left', color=muted, family=disp)
     rec_field = args.received_field or cfg.get('received_field', 'received_date')
     post_field = args.posted_field or cfg.get('posted_field', 'date')
     deadline_raw = args.deadline or cfg.get('deadline')
@@ -1259,18 +1289,18 @@ def draw_cumulative(cv, df, args, cfg, pal, head_xy, rect, out, head_max_w=None,
         ax.stackplot(days, cum['Oppose'].values, cum['Support'].values, cum['Unclear'].values,
                      colors=[pal['oppose'], pal['support'], pal['neutral']], linewidth=0)
         total_now = int(cum.iloc[-1].sum())
-        style_axes(ax, pal, total_now)
+        style_axes(ax, pal, total_now, size=9 * sc)
         ax.set_xlim(0, end_day + 0.4)
         ax.set_ylim(0, total_now * 1.12)
         span_idx = pd.date_range(start, start + pd.Timedelta(days=int(end_day)), freq='D')
-        day_ticks(ax, span_idx, n=5)
+        day_ticks(ax, span_idx, n=5 if sc == 1 else 9)
         asof_raw = args.as_of or cfg.get('as_of')
         asof = parse_day(asof_raw, '--as-of') if asof_raw else pd.Timestamp.today().normalize()
         if deadline is not None:
             dd = (deadline - start).days
             ax.axvline(dd, color=pal['ink'], lw=2, ls=(0, (4, 3)), zorder=4)
             pad = 0.45 if not label_pad_px else label_pad_px / (rect[2] * cv.W / (end_day + 0.4))   # days
-            ax.text(dd - pad, total_now * 1.09, f'{deadline:%b} {deadline.day}', ha='right', va='top', fontsize=10.5,
+            ax.text(dd - pad, total_now * 1.09, f'{deadline:%b} {deadline.day}', ha='right', va='top', fontsize=10.5 * sc,
                     fontweight='bold', color=pal['ink'])
             left = (deadline - asof).days
             if left > 0:
@@ -1278,11 +1308,87 @@ def draw_cumulative(cv, df, args, cfg, pal, head_xy, rect, out, head_max_w=None,
                 if days_left_right:
                     mid = dd - pad
                 ax.text(mid, total_now * 0.5, f'{left} day{"s" if left != 1 else ""} left', ha='right' if days_left_right else 'center', va='center',
-                        fontsize=10.5, color=muted)
+                        fontsize=10.5 * sc, color=muted)
             out['deadline'] = f'{deadline:%Y-%m-%d}'
             out['days_left'] = int(left)
         out['cumulative'] = [dict(date=f'{d:%Y-%m-%d}', oppose=int(r['Oppose']), support=int(r['Support']),
                                   neither=int(r['Unclear'])) for d, r in cum.iterrows()]
+
+
+HEAT_GEOM = dict(label_x=0.03, text_x=0.048, head_y=0.845, sub_y=0.815, label_w=0.34, x_cells=0.37, cell_w=0.115,
+                 top=0.765, bottom=0.445, key_rect_y=0.787, key_text_y=0.795, s=1.0)
+OVERLAP_GEOM = dict(head_x=0.745, head_y=0.845, sub_y=0.815, h=0.355, right=0.97, y=0.445, s=1.0)
+
+
+def draw_heatmap(cv, names, heat, pal, basis_note, g=None):
+    """Topics x position: the share of each side's comments that raise each topic. `g` overrides HEAT_GEOM."""
+    g = {**HEAT_GEOM, **(g or {})}
+    fig, T = cv.fig, cv.T
+    k, s_ = len(names), g['s']
+    if not k:
+        return
+    text_on = lambda fill: pal['ink'] if contrast(pal['ink'], fill) >= contrast(pal['bg'], fill) else pal['bg']
+    head = dict(fontsize=12 * s_, fontweight='bold', va='center', ha='left', color=cv.muted, family=cv.disp)
+    sub = dict(fontsize=9.5 * s_, va='center', ha='left', color=cv.muted)
+    T(g['label_x'], g['head_y'], 'TOPICS × POSITION', **head)
+    T(g['label_x'], g['sub_y'], f'share of each side’s comments that raise the topic  ·  {basis_note}', **sub)
+    cell_w, label_w, x_cells = g['cell_w'], g['label_w'], g['x_cells']
+    top, bottom = g['top'], g['bottom']
+    row_h = (bottom - top) / k           # negative: rows run downward
+    for j, (label, col) in enumerate((('OPPOSE', pal['oppose']), ('SUPPORT', pal['support']),
+                                      ('NEITHER', pal['neutral']))):
+        cx = x_cells + cell_w * (j + 0.5)
+        fig.add_artist(Rectangle((cx - 0.05 * s_, g['key_rect_y']), 0.009 * s_, 0.016 * s_, transform=fig.transFigure,
+                                 fc=col, ec='none'))
+        T(cx - 0.036 * s_, g['key_text_y'], label, fontsize=10 * s_, fontweight='bold', va='center', ha='left',
+          family=cv.disp)
+    hax = fig.add_axes([x_cells, bottom, cell_w * 3, top - bottom])
+    hax.set_xlim(0, 3)
+    hax.set_ylim(k, 0)
+    hax.axis('off')
+    for i in range(k):
+        yc = top + row_h * (i + 0.5)
+        T(g['label_x'], yc, str(i + 1), fontsize=11 * s_, fontweight='bold', va='center', ha='left', family=cv.disp)
+        lines = cv.wrap(names[i], 9.5 * s_, label_w - 0.03)[:2]
+        T(g['text_x'], yc, '\n'.join(lines), fontsize=9.5 * s_, va='center', ha='left', linespacing=1.1)
+        for j, col in enumerate((pal['oppose'], pal['support'], pal['neutral'])):
+            v = heat[i, j]
+            fill = mix(pal['bg'], col, 0.06 + 0.94 * v)
+            hax.add_patch(Rectangle((j, i), 1, 1, fc=fill, ec=pal['bg'], lw=2.5))
+            hax.text(j + 0.5, i + 0.5, f'{round(v * 100)}%', ha='center', va='center', fontsize=10.5 * s_,
+                     fontweight='bold', color=text_on(fill))
+
+
+def draw_overlap(cv, jac, pal, g=None):
+    """Topic co-occurrence: lower triangle, the diagonal carries the topic number. `g` overrides OVERLAP_GEOM."""
+    g = {**OVERLAP_GEOM, **(g or {})}
+    fig, T = cv.fig, cv.T
+    k, s_ = len(jac), g['s']
+    if k < 2:
+        return
+    ink_ramp = lambda v: mix(pal['bg'], pal['ink'], 0.08 + 0.80 * float(v))
+    text_on = lambda fill: pal['ink'] if contrast(pal['ink'], fill) >= contrast(pal['bg'], fill) else pal['bg']
+    head = dict(fontsize=12 * s_, fontweight='bold', va='center', ha='left', color=cv.muted, family=cv.disp)
+    sub = dict(fontsize=9.5 * s_, va='center', ha='left', color=cv.muted)
+    T(g['head_x'], g['head_y'], 'TOPIC OVERLAP', **head)
+    T(g['head_x'], g['sub_y'], 'comments sharing both topics, %', **sub)
+    h = g['h']
+    w = h * cv.H / cv.W
+    oax = fig.add_axes([g['right'] - w, g['y'], w, h])
+    oax.set_xlim(0, k)
+    oax.set_ylim(k, 0)
+    oax.axis('off')
+    for i in range(k):
+        for j in range(i + 1):
+            if i == j:
+                oax.add_patch(Rectangle((j, i), 1, 1, fc=pal['bg'], ec=pal['bg'], lw=2))
+                oax.text(j + 0.5, i + 0.5, str(i + 1), ha='center', va='center', fontsize=11 * s_, fontweight='bold',
+                         color=pal['ink'], family=cv.disp)
+            else:
+                fill = ink_ramp(jac[i, j])
+                oax.add_patch(Rectangle((j, i), 1, 1, fc=fill, ec=pal['bg'], lw=2))
+                oax.text(j + 0.5, i + 0.5, f'{round(jac[i, j] * 100)}', ha='center', va='center', fontsize=9 * s_,
+                         fontweight='bold', color=text_on(fill))
 
 
 def build_detail(df, meta, cfg, pal, out_dir, args):
@@ -1296,61 +1402,11 @@ def build_detail(df, meta, cfg, pal, out_dir, args):
     k = len(names)
     out = dict(basis=basis, comments_in_basis=n_basis, topics=names, share_by_position=heat.round(4).tolist(),
                overlap=jac.round(4).tolist())
-    ink_ramp = lambda v: mix(pal['bg'], pal['ink'], 0.08 + 0.80 * float(v))
-    text_on = lambda fill: pal['ink'] if contrast(pal['ink'], fill) >= contrast(pal['bg'], fill) else pal['bg']
-    head = dict(fontsize=12, fontweight='bold', va='center', ha='left', color=muted, family=disp)
-    sub = dict(fontsize=9.5, va='center', ha='left', color=muted)
     basis_note = 'each form-letter campaign counted once' if basis == 'voices' else 'all comments'
 
-    # ---- row 1 left: topics x position heatmap
-    if k:
-        T(0.03, 0.845, 'TOPICS × POSITION', **head)
-        T(0.03, 0.815, f'share of each side’s comments that raise the topic  ·  {basis_note}', **sub)
-        cell_w, label_w, x_cells = 0.115, 0.34, 0.37
-        top, bottom = 0.765, 0.445
-        row_h = (bottom - top) / k           # negative: rows run downward
-        for j, (label, col) in enumerate((('OPPOSE', pal['oppose']), ('SUPPORT', pal['support']),
-                                          ('NEITHER', pal['neutral']))):
-            cx = x_cells + cell_w * (j + 0.5)
-            fig.add_artist(Rectangle((cx - 0.05, 0.787), 0.009, 0.016, transform=fig.transFigure, fc=col, ec='none'))
-            T(cx - 0.036, 0.795, label, fontsize=10, fontweight='bold', va='center', ha='left', family=disp)
-        hax = fig.add_axes([x_cells, bottom, cell_w * 3, top - bottom])
-        hax.set_xlim(0, 3)
-        hax.set_ylim(k, 0)
-        hax.axis('off')
-        for i in range(k):
-            yc = top + row_h * (i + 0.5)
-            T(0.03, yc, str(i + 1), fontsize=11, fontweight='bold', va='center', ha='left', family=disp)
-            lines = cv.wrap(names[i], 9.5, label_w - 0.03)[:2]
-            T(0.048, yc, '\n'.join(lines), fontsize=9.5, va='center', ha='left', linespacing=1.1)
-            for j, col in enumerate((pal['oppose'], pal['support'], pal['neutral'])):
-                v = heat[i, j]
-                fill = mix(pal['bg'], col, 0.06 + 0.94 * v)
-                hax.add_patch(Rectangle((j, i), 1, 1, fc=fill, ec=pal['bg'], lw=2.5))
-                hax.text(j + 0.5, i + 0.5, f'{round(v * 100)}%', ha='center', va='center', fontsize=10.5,
-                         fontweight='bold', color=text_on(fill))
-
-    # ---- row 1 right: topic co-occurrence (lower triangle, diagonal carries the topic number)
-    if k >= 2:
-        T(0.745, 0.845, 'TOPIC OVERLAP', **head)
-        T(0.745, 0.815, 'comments sharing both topics, %', **sub)
-        h = 0.355
-        w = h * H / W
-        oax = fig.add_axes([0.97 - w, 0.445, w, h])
-        oax.set_xlim(0, k)
-        oax.set_ylim(k, 0)
-        oax.axis('off')
-        for i in range(k):
-            for j in range(i + 1):
-                if i == j:
-                    oax.add_patch(Rectangle((j, i), 1, 1, fc=pal['bg'], ec=pal['bg'], lw=2))
-                    oax.text(j + 0.5, i + 0.5, str(i + 1), ha='center', va='center', fontsize=11, fontweight='bold',
-                             color=pal['ink'], family=disp)
-                else:
-                    fill = ink_ramp(jac[i, j])
-                    oax.add_patch(Rectangle((j, i), 1, 1, fc=fill, ec=pal['bg'], lw=2))
-                    oax.text(j + 0.5, i + 0.5, f'{round(jac[i, j] * 100)}', ha='center', va='center', fontsize=9,
-                             fontweight='bold', color=text_on(fill))
+    # ---- row 1: topics x position heatmap, and topic co-occurrence
+    draw_heatmap(cv, names, heat, pal, basis_note)
+    draw_overlap(cv, jac, pal)
 
     # ---- row 2: dates
     draw_backlog(cv, df, args, cfg, pal, (0.03, 0.40), 0.372, [0.07, 0.095, 0.40, 0.245], out)
@@ -1361,6 +1417,60 @@ def build_detail(df, meta, cfg, pal, out_dir, args):
     jp.write_text(json.dumps(out, indent=2, default=str), encoding='utf-8')
     return paths + [jp]
 
+
+
+# ------------------- any figure as a slide of its own (--slides <figure>) -------------------
+# The figure fills the area under the header. SOLO_SCALE enlarges its text and chart parts to suit the larger area;
+# a figure not listed there is drawn at its normal size.
+SOLO_FIGURES = ('meter',) + tuple(n for n in PANEL_NAMES if n != 'none') + ('heatmap', 'overlap')
+SOLO_SLOT = dict(x=0.03, w=0.94, wide=True, solo=True, head_y=0.835, cloud=(0.05, 0.72), chart_top=0.795,
+                 chart_bottom=0.05, budget=0.72, ax_y=0.085, chart_h=0.67, map_bottom=0.045, hscale=1.25)
+_CLOUD_SOLO = dict(scale=2.0, words_x=1.7)
+SOLO_SCALE = {'cloud_oppose': _CLOUD_SOLO, 'cloud_support': _CLOUD_SOLO, 'cloud_both': _CLOUD_SOLO,
+              'topics': dict(scale=1.7), 'timeline': dict(scale=1.5), 'entities': dict(scale=1.6),
+              'state_map': dict(scale=2.2), 'backlog': dict(scale=1.5), 'cumulative': dict(scale=1.5)}
+
+
+def build_solo(figure, df, meta, cfg, pal, out_dir, args):
+    """One figure on a slide of its own: same frame and header as every other slide. Written as <name>_<figure>."""
+    cv = Canvas(df, meta, cfg, pal, args)
+    total = len(df)
+    n_op = int((df['_pos'] == 'Oppose').sum())
+    n_su = int((df['_pos'] == 'Support').sum())
+    n_un = total - n_op - n_su
+    ctx = Ctx(cv=cv, df=df, meta=meta, cfg=cfg, pal=pal, args=args, total=total,
+              v=voices(df) if figure.startswith('cloud') else None, rule_id=cv.rule_id)
+    if figure == 'meter':
+        meter = args.meter or cfg.get('meter', 'oppose')
+        if meter not in ('oppose', 'support'):
+            sys.exit(f"meter must be 'oppose' or 'support', got {meter!r}")
+        draw_meter(cv, pal, total, n_op, n_su, n_un, meter, dx=0.5 - 0.185)    # centred on the slide
+        ctx.data.update(meter=meter, pct_oppose=round(100 * n_op / total, 1) if total else 0,
+                        pct_support=round(100 * n_su / total, 1) if total else 0)
+    elif figure in ('heatmap', 'overlap'):
+        basis = args.basis or cfg.get('basis', 'comments')
+        names, heat, jac, n_basis = topic_matrices(df, cfg.get('topic_prefix', args.topic_prefix), args.heatmap_topics, basis)
+        ctx.data.update(basis=basis, comments_in_basis=n_basis, topics=names, share_by_position=heat.round(4).tolist(),
+                        overlap=jac.round(4).tolist())
+        if figure == 'heatmap':
+            note = 'each form-letter campaign counted once' if basis == 'voices' else 'all comments'
+            draw_heatmap(cv, names, heat, pal, note,
+                         dict(label_x=0.03, text_x=0.055, head_y=0.835, sub_y=0.803, label_w=0.43, x_cells=0.47,
+                              cell_w=0.165, top=0.735, bottom=max(0.07, 0.735 - 0.09 * len(names)), key_rect_y=0.763,
+                              key_text_y=0.772, s=1.45))
+        else:
+            h = 0.66
+            draw_overlap(cv, jac, pal, dict(head_x=0.03, head_y=0.835, sub_y=0.803, h=h, y=0.07,
+                                            right=0.5 + h * cv.H / cv.W / 2, s=1.45))
+    else:
+        PANELS[figure](ctx, {**SOLO_SLOT, **SOLO_SCALE.get(figure, {})})
+    name = f'{args.name}_{figure}'
+    paths = cv.save(out_dir, name, args.formats)
+    data = dict(figure=figure, rule_id=cv.rule_id, date_range=cv.dates, total=total, oppose=n_op, support=n_su,
+                neither=n_un, **ctx.data)
+    jp = out_dir / f'{name}.json'
+    jp.write_text(json.dumps(data, indent=2, default=str), encoding='utf-8')
+    return paths + [jp]
 
 
 # ----------------------------------- CLI -----------------------------------
@@ -1383,8 +1493,9 @@ def main(argv=None):
     ap.add_argument('--meter', choices=['oppose', 'support'], default=None,
                     help='which share the gauge shows (default: oppose, or infographic.meter in the config)')
     ap.add_argument('--slides', default=None,
-                    help="comma list of slides to build: 'summary' (default) and/or 'detail' (topics heatmap + "
-                         "overlap, received vs posted, cumulative vs deadline; written as <name>_2.png)")
+                    help="comma list of slides to build: 'summary' (default), 'detail' (topics heatmap + overlap, "
+                         "received vs posted, cumulative vs deadline; written as <name>_2.png), and/or any single "
+                         "figure as a slide of its own, written as <name>_<figure>.png: " + ', '.join(SOLO_FIGURES))
     ap.add_argument('--deadline', default=None, help='comment deadline for the detail slide, e.g. 2026-10-13. '
                     'Never inferred; without it the cumulative curve has no deadline marker')
     ap.add_argument('--as-of', default=None, help='date used for "days left" (default: today; pass it for a reproducible rebuild)')
@@ -1494,9 +1605,9 @@ def main(argv=None):
         args.logo = str(logo_path)
     args.website = args.website or cfg.get('website')
     slides = args.slides or cfg.get('slides', 'summary')
-    slides = [x.strip() for x in (slides.split(',') if isinstance(slides, str) else slides) if x.strip()]
-    if not slides or set(slides) - {'summary', 'detail'}:
-        sys.exit("--slides takes 'summary', 'detail' or 'summary,detail'")
+    slides = [x.strip().lower().replace('-', '_') for x in (slides.split(',') if isinstance(slides, str) else slides) if x.strip()]
+    if not slides or set(slides) - ({'summary', 'detail'} | set(SOLO_FIGURES)):
+        sys.exit("--slides takes 'summary', 'detail' and/or a figure name: " + ', '.join(SOLO_FIGURES))
     args.layout_resolved = resolve_layout(args, cfg)
     warns = check_palette(pal)
     for w in warns:
@@ -1514,10 +1625,14 @@ def main(argv=None):
     df = load_comments(parquet)
     out_dir = Path(args.out_dir) if args.out_dir else reg
     files, data = [], None
-    if 'summary' in slides:
-        files, data = build(df, meta, cfg, pal, out_dir, args)
-    if 'detail' in slides:
-        files += build_detail(df, meta, cfg, pal, out_dir, args)
+    for sl in dict.fromkeys(slides):                      # in the order given, each once
+        if sl == 'summary':
+            f, data = build(df, meta, cfg, pal, out_dir, args)
+            files += f
+        elif sl == 'detail':
+            files += build_detail(df, meta, cfg, pal, out_dir, args)
+        else:
+            files += build_solo(sl, df, meta, cfg, pal, out_dir, args)
     for f in files:
         print(f)
     return data
