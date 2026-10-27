@@ -1115,9 +1115,9 @@ def draw_meter(cv, pal, total, n_op, n_su, n_un, meter, dx=0.0):
     n_meter = n_op if meter == 'oppose' else n_su
     frac = n_meter / total if total else 0
     T(0.03 + dx, 0.785, f'{total:,}', fontsize=62, fontweight='bold', va='center', ha='left', family=disp)
-    T(0.033 + dx, 0.685, 'comments', fontsize=19, va='center', ha='left', color=muted)
+    T(0.033 + dx, 0.685, 'comments published', fontsize=19, va='center', ha='left', color=muted)
     if cv.received:                                           # small disclosure; the published count stays the figure
-        T(0.034 + dx, 0.640, f"{cv.received['count']:,} submitted", fontsize=10.5, va='center', ha='left', color=muted)
+        T(0.034 + dx, 0.640, f"{cv.received['count']:,} comments submitted", fontsize=10.5, va='center', ha='left', color=muted)
     gax = fig.add_axes([0.03 + dx, 0.235, 0.31, 0.40])
     draw_gauge(gax, frac, pal, pal[meter])
     T(0.185 + dx, 0.185, pct_str(n_meter, total).replace('<', '').replace('>', ''), fontsize=54, fontweight='bold',
