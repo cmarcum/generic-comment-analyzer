@@ -159,7 +159,17 @@ def read_parquet_any(path):
     raw = Path(path).read_bytes()
     if raw[:2] == b'\x1f\x8b':
         raw = gzip.decompress(raw)
-    return pd.read_parquet(io.BytesIO(raw))
+    import pyarrow.parquet as pq
+    table = pq.read_table(io.BytesIO(raw))
+    df = table.to_pandas()
+    # Some pipelines record how many comments were submitted (as opposed to
+    # published) as JSON under the file's `comments_received` metadata key.
+    try:
+        info = json.loads((table.schema.metadata or {})[b'comments_received'])
+        df.attrs['comments_received'] = dict(count=int(info['count']), as_of=str(info.get('as_of') or ''))
+    except (KeyError, ValueError, TypeError):
+        pass
+    return df
 
 
 def _as_list(x):
@@ -569,6 +579,7 @@ class Canvas:
         self.renderer = self.fig.canvas.get_renderer()
         self.rule_id = meta.get('docket_id') or args.rule_id
         self.dates = date_range_label(df, args.date_field)
+        self.received = df.attrs.get('comments_received')        # {count, as_of} or None
         self.title = cfg.get('title', args.title)
         self._chrome()
 
@@ -1105,6 +1116,8 @@ def draw_meter(cv, pal, total, n_op, n_su, n_un, meter, dx=0.0):
     frac = n_meter / total if total else 0
     T(0.03 + dx, 0.785, f'{total:,}', fontsize=62, fontweight='bold', va='center', ha='left', family=disp)
     T(0.033 + dx, 0.685, 'comments', fontsize=19, va='center', ha='left', color=muted)
+    if cv.received:                                           # small disclosure; the published count stays the figure
+        T(0.034 + dx, 0.640, f"{cv.received['count']:,} submitted", fontsize=10.5, va='center', ha='left', color=muted)
     gax = fig.add_axes([0.03 + dx, 0.235, 0.31, 0.40])
     draw_gauge(gax, frac, pal, pal[meter])
     T(0.185 + dx, 0.185, pct_str(n_meter, total).replace('<', '').replace('>', ''), fontsize=54, fontweight='bold',
@@ -1147,7 +1160,7 @@ def build(df, meta, cfg, pal, out_dir, args):
     plt.close(fig)
 
     topics = ctx.data.get('topics') or topic_counts(df, cfg.get('topic_prefix', args.topic_prefix), args.topics)
-    data = dict(rule_id=rule_id, date_range=dates, total=total, oppose=n_op, support=n_su, neither=n_un,
+    data = dict(comments_received=cv.received, rule_id=rule_id, date_range=dates, total=total, oppose=n_op, support=n_su, neither=n_un,
                 meter=meter, pct_oppose=round(100 * n_op / total, 1) if total else 0,
                 pct_support=round(100 * n_su / total, 1) if total else 0, topics=topics,
                 entities=entity_summary(df, args.entities), cloud_words=ctx.data.get('cloud_words', {}),
@@ -1466,7 +1479,7 @@ def build_solo(figure, df, meta, cfg, pal, out_dir, args):
         PANELS[figure](ctx, {**SOLO_SLOT, **SOLO_SCALE.get(figure, {})})
     name = f'{args.name}_{figure}'
     paths = cv.save(out_dir, name, args.formats)
-    data = dict(figure=figure, rule_id=cv.rule_id, date_range=cv.dates, total=total, oppose=n_op, support=n_su,
+    data = dict(comments_received=cv.received, figure=figure, rule_id=cv.rule_id, date_range=cv.dates, total=total, oppose=n_op, support=n_su,
                 neither=n_un, **ctx.data)
     jp = out_dir / f'{name}.json'
     jp.write_text(json.dumps(data, indent=2, default=str), encoding='utf-8')

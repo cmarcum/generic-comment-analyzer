@@ -107,6 +107,7 @@ import pandas as pd
 import yaml
 from pydantic import BaseModel, Field
 
+import comments_received
 from generate_report import DEFAULT_COLORS, comment_position
 
 ROOT = Path(__file__).resolve().parent
@@ -1196,7 +1197,8 @@ def render_page(reg_dir: Path, payload: dict, regulation_name: str, colors: dict
     env = Environment(loader=FileSystemLoader(str(ROOT)), autoescape=select_autoescape(['html']))
     html = env.get_template('appendix_template.html').render(
         regulation_name=regulation_name, colors=colors, questions=questions, glance=build_glance(questions),
-        generated=payload['generated'], parquet=payload['parquet'])
+        generated=payload['generated'], parquet=payload['parquet'],
+        comments_received=comments_received.load(reg_dir, reg_dir / 'full_run.parquet'))
     out = reg_dir / 'appendix.html'
     out.write_text(html, encoding='utf-8')
     return out

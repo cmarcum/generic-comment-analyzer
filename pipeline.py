@@ -41,6 +41,7 @@ import threading
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 
 # Import the generic comment analyzer
+import comments_received
 from comment_analyzer import CommentAnalyzer, LLMCredentialsError
 
 # Simple logging setup
@@ -1536,7 +1537,14 @@ def save_results(analyzed_comments: List[Dict[str, Any]], output_file: str, forc
                 f"{len(df)} rows — this looks like an accidental shrink. Backed up "
                 f"the existing file to {bak}. Re-run with --force if you really mean it.")
 
-    df.to_parquet(output_file, index=False)
+    # The number submitted rides along in the file's metadata (columns and rows are
+    # untouched). Read the previous file's value first: it is what survives a run
+    # whose refresh failed.
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    received = comments_received.load(Path('.'), output_file)
+    pq.write_table(comments_received.embed(pa.Table.from_pandas(df, preserve_index=False), received),
+                   output_file, compression='snappy')
     logger.info(f"✅ Saved results to {output_file}")
 
 
@@ -1804,6 +1812,9 @@ def main():
         logger.info(f"Working in regulation directory: {reg_dir}")
     if args.csv is None:
         args.csv = 'source.csv'
+    # Every run asks regulations.gov how many comments were submitted (published
+    # ones are all we analyze). A failure only keeps the previous value.
+    comments_received.refresh(Path('.'), csv_path=args.csv)
     # Sample runs are throwaway smoke tests — never let them write over the
     # canonical full-corpus outputs (full_run.parquet / index.html /
     # comment_detail.json). Namespace their output and skip the report.
@@ -2038,7 +2049,7 @@ def main():
                 comments = load_results_parquet(args.output)
 
                 logger.info(f"Generating HTML report: {html_output}")
-                generate_html(comments, {}, {}, html_output)
+                generate_html(comments, {}, {}, html_output, parquet_source=args.output)
 
                 logger.info(f"✅ HTML report generated: {html_output}")
 

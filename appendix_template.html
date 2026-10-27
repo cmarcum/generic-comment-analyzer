@@ -98,7 +98,7 @@
     <header class="report-header">
         <h1>Appendix — {{ regulation_name }}</h1>
         <p class="subtitle">One-off questions asked of the comments, answered from the analyzed data. Generated on request, locally; this page is not part of the published report.</p>
-        <p class="small muted">Generated {{ generated }} from {{ "{:,}".format(parquet.rows) }} analyzed comments (data file last modified {{ parquet.modified }}).</p>
+        <p class="small muted">Generated {{ generated }} from {{ "{:,}".format(parquet.rows) }} analyzed comments (data file last modified {{ parquet.modified }}).{% if comments_received %} regulations.gov also reports {{ "{:,}".format(comments_received.count) }} comments submitted{% if comments_received.as_of %} (as of {{ comments_received.as_of }}){% endif %}; only published comments are analyzed, and every count here is out of those.{% endif %}</p>
     </header>
 
     <div class="banner small">
