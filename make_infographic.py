@@ -1521,6 +1521,9 @@ def main(argv=None):
     ap.add_argument('--received-field', default=None, help='detail slide: when submitted (default: received_date)')
     ap.add_argument('--posted-field', default=None, help='detail slide: when posted (default: date)')
     ap.add_argument('--logo', default=None, help='PNG/JPG shown in the header after the title (SVG not supported)')
+    ap.add_argument('--received', type=int, default=None, help='number of comments submitted (as opposed to published), shown as a small '
+                    'note under the count; overrides any value recorded in the parquet')
+    ap.add_argument('--received-as-of', default='', help='date that --received was read, kept in the output JSON')
     ap.add_argument('--website', default=None, help='text shown in the header next to the logo, e.g. example.org')
     ap.add_argument('--logo-height', type=float, default=0.06, help='logo height as a fraction of slide height')
     ap.add_argument('--panel', choices=['timeline', 'entities'], default=None,
@@ -1636,6 +1639,8 @@ def main(argv=None):
         if wanted:
             POSITION_TAGS[side] = wanted
     df = load_comments(parquet)
+    if args.received is not None:
+        df.attrs['comments_received'] = dict(count=args.received, as_of=args.received_as_of)
     out_dir = Path(args.out_dir) if args.out_dir else reg
     files, data = [], None
     for sl in dict.fromkeys(slides):                      # in the order given, each once
