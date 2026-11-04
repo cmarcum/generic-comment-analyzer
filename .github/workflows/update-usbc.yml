@@ -87,7 +87,10 @@ jobs:
     # next scheduled run continues. So a run is bounded by one budget's worth of
     # comments (~485 after the ~14 listing calls) plus analysis, not by hours of
     # sleeping. A drained run exits in well under a minute.
-    timeout-minutes: 60
+    # Analysis is not checkpointed: nothing is saved until the pipeline step ends, so a
+    # timeout throws away the whole run. 120 leaves room for a ~10k-comment backlog
+    # (~2-4 comments/s) after several days of failed runs.
+    timeout-minutes: 120
     permissions:
       contents: write  # to commit data_changelog.json on the publish run
     env:
