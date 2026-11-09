@@ -33,6 +33,7 @@ Usage:
 """
 import argparse
 import csv
+import hashlib
 import json
 import os
 import re
@@ -45,6 +46,17 @@ from fetch_comments_api import COLUMNS, attrs_to_row
 
 MIRROR = 'https://mirrulations.s3.amazonaws.com'
 NS = {'s3': 'http://s3.amazonaws.com/doc/2006-03-01/'}
+
+
+def row_key(row):
+    """Fingerprint of a WHOLE source.csv row (every column, as csv would read it back).
+
+    A Document ID alone is not enough to call a row a repeat: regulations.gov
+    sometimes gives two different comments the same ID. Only a row that matches
+    an existing one in every column is skipped.
+    """
+    vals = ['' if row.get(c) is None else str(row[c]) for c in COLUMNS]
+    return hashlib.sha1(''.join(vals).encode('utf-8')).digest()
 
 
 def _list_keys(prefix):
@@ -126,10 +138,12 @@ def main():
     agency = docket.split('-')[0]
 
     known = set()
+    known_rows = set()
     if os.path.exists(args.csv):
         with open(args.csv, newline='', encoding='utf-8') as f:
             for r in csv.DictReader(f):
                 known.add(r['Document ID'])
+                known_rows.add(row_key(r))
     print(f'{docket}: {len(known):,} comments already in {args.csv}')
 
     print(f'listing the Mirrulations mirror for {agency}/{docket}...')
@@ -153,11 +167,22 @@ def main():
 
     written = 0
     failed = 0
+    already_have = 0
     with open(args.csv, 'a', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=COLUMNS)
         for n, docid in enumerate(fetch_ids, 1):
             try:
-                writer.writerow(fetch_row(agency, docket, docid, attachments))
+                row = fetch_row(agency, docket, docid, attachments)
+                # A mirror key like "<id>(1)" is never in `known` (the CSV holds the true id),
+                # so it comes back as "missing" every run. Only a row identical in every
+                # column to one already in the CSV is a repeat; same id with different content
+                # is a different comment and is kept.
+                key = row_key(row)
+                if key in known_rows:
+                    already_have += 1
+                    continue
+                known_rows.add(key)
+                writer.writerow(row)
             except Exception as e:
                 print(f'\n  FAILED {docid}: {e}')
                 failed += 1
@@ -167,6 +192,8 @@ def main():
                 f.flush()
             print(f'  fetched {n:,}/{len(fetch_ids):,}', end='\r', flush=True)
     print()
+    if already_have:
+        print(f'{already_have:,} mirror comment(s) skipped: an identical row is already in {args.csv}')
     print(f'appended {written:,} rows to {args.csv} from Mirrulations (now {len(known) + written:,})')
 
     # Two distinct reasons this can be nonzero: a deliberate --limit cap, or a

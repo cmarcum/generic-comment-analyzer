@@ -166,12 +166,24 @@ def read_comments_from_csv(csv_file: str, limit: Optional[int] = None, sample_si
     
     # First pass: collect basic comment info without processing attachments
     all_rows = []
+    seen_rows = set()
+    identical_rows = 0
     with open(csv_file, 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         for i, row in enumerate(reader):
             if limit and i >= limit:
                 break
+            # A row identical to an earlier one in EVERY column is the same comment
+            # appended twice, not a second comment. (Same Document ID with any
+            # difference is kept; those are handled by the id suffixing below.)
+            row_fp = hashlib.sha1(repr(tuple(row.items())).encode('utf-8')).digest()
+            if row_fp in seen_rows:
+                identical_rows += 1
+                continue
+            seen_rows.add(row_fp)
             all_rows.append(row)
+    if identical_rows:
+        logger.warning(f"Dropped {identical_rows} rows identical in every column to an earlier row in {csv_file}")
     
     # Apply sampling if requested
     if sample_size and len(all_rows) > sample_size:
